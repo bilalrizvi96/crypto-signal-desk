@@ -1,0 +1,114 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Crypto Signal Desk — configuration
+#  Everything here has a sane default; edit what you care about.
+# ─────────────────────────────────────────────────────────────────────────────
+
+universe:
+  exchange: binance          # any ccxt venue: binance, bybit, okx, kraken, kucoin…
+  market_type: spot          # "spot", or "swap" for perpetuals (needed for real shorts)
+  quote: USDT
+
+  # Which coins get scanned. Ranked by 24h quote volume on the venue.
+  large_cap_top: 12          # top 12 by volume = the "large" bucket
+  small_cap_from: 25         # the "small" bucket is drawn from ranks 25–90
+  small_cap_to: 90
+  small_cap_count: 10        # …and capped at 10 so a scan stays quick
+
+  min_quote_volume_usd: 3000000   # liquidity floor — skip anything thinner
+  max_spread_pct: 0.15            # skip wide spreads, they eat scalp edge
+
+  include: []                # always scan these, e.g. ["BTC/USDT", "SOL/USDT"]
+  exclude:                   # stable-to-stable pairs produce garbage signals
+    - USDC/USDT
+    - FDUSD/USDT
+    - TUSD/USDT
+    - DAI/USDT
+    - BUSD/USDT
+
+# ── Scalping: fast in and out ────────────────────────────────────────────────
+scalp:
+  enabled: true
+  entry_tf: 5m               # signals fire off this timeframe
+  confirm_tf: 15m            # must broadly agree
+  bias_tf: 1h                # trading against this gets heavily penalised
+  limit: 400
+  atr_stop_mult: 1.2         # stop = 1.2 × ATR from entry
+  targets_r: [1.0, 2.0]      # take half at 1R, the rest at 2R
+  min_score: 55              # |score| needed to fire an entry
+  watch_score: 40            # |score| needed to appear on the watchlist
+  min_adx: 18                # below this the market is chopping
+  max_hold_bars: 24          # paper trades time out after 24 × 5m = 2h
+  min_atr_pct: 0.10          # too quiet to cover fees
+  max_atr_pct: 8.0           # too violent, stops get run
+
+# ── Swing: hold for hours to days ────────────────────────────────────────────
+swing:
+  enabled: true
+  entry_tf: 4h
+  confirm_tf: 1d
+  bias_tf: 1d
+  limit: 400
+  atr_stop_mult: 1.6
+  targets_r: [1.5, 3.0]
+  min_score: 50
+  watch_score: 35
+  min_adx: 20
+  max_hold_bars: 30
+  min_atr_pct: 0.5
+  max_atr_pct: 25.0
+
+# ── News & sentiment (free public feeds, no API keys) ────────────────────────
+news:
+  enabled: true
+  max_age_hours: 24
+  refresh_seconds: 900       # re-pull every 15 minutes
+  sentiment_weight: 0.12     # news can move a score by at most ±12 points
+  block_on_critical: true    # veto entries on hack / exploit / delisting news
+  timeout_seconds: 10
+  feeds:
+    - https://www.coindesk.com/arc/outboundfeeds/rss/
+    - https://cointelegraph.com/rss
+    - https://cryptopanic.com/news/rss/
+    - https://decrypt.co/feed
+    - https://bitcoinmagazine.com/feed
+    - https://www.theblock.co/rss.xml
+    - https://cryptoslate.com/feed/
+    - https://news.bitcoin.com/feed/
+
+# ── Risk ─────────────────────────────────────────────────────────────────────
+risk:
+  account_equity: 1000       # what position sizes are calculated against
+  risk_per_trade_pct: 1.0    # risk 1% of equity per trade
+  max_open_positions: 5
+  max_leverage: 3.0
+  daily_loss_limit_pct: 5.0  # kill switch: stop entering after a 5% day
+  max_notional_per_trade: 250
+
+# ── Paper trading ────────────────────────────────────────────────────────────
+paper_enabled: true
+
+# ── Live trading — OFF, and it takes five deliberate steps to change that ────
+#  1. enabled: true
+#  2. dry_run: false
+#  3. testnet: false        (leave true first; testnet trading needs only 1+2)
+#  4. export LIVE_CONFIRM=I_UNDERSTAND_THE_RISK
+#  5. export EXCHANGE_API_KEY=… EXCHANGE_API_SECRET=…
+#  With any one of those missing, orders are logged and never transmitted.
+live:
+  enabled: false
+  exchange: binance
+  market_type: spot
+  testnet: true
+  dry_run: true
+  order_type: market
+  api_key_env: EXCHANGE_API_KEY
+  api_secret_env: EXCHANGE_API_SECRET
+  confirm_phrase_env: LIVE_CONFIRM
+  confirm_phrase: I_UNDERSTAND_THE_RISK
+
+# ── Dashboard server ─────────────────────────────────────────────────────────
+server:
+  host: 127.0.0.1
+  port: 8787
+  scan_interval_seconds: 60  # how often the whole universe is re-scanned
+  open_browser: true

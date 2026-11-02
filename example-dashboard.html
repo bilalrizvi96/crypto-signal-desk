@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crypto Signal Desk</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#212120;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --long:#0ca30c; --short:#d03b3b; --watch:#fab219; --serious:#ec835a;
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+    --radius:10px;
+    --font:system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--plane);color:var(--ink);font-family:var(--font);
+       font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+  a{color:var(--series-1);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1500px;margin:0 auto;padding:18px 20px 60px}
+
+  header.top{display:flex;flex-wrap:wrap;gap:14px;align-items:center;
+    justify-content:space-between;padding:14px 16px;background:var(--surface);
+    border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px}
+  .brand{display:flex;align-items:center;gap:11px;min-width:0}
+  .brand h1{font-size:17px;margin:0;font-weight:650;letter-spacing:-0.01em}
+  .brand .sub{color:var(--muted);font-size:12px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--long);flex:none}
+  .dot.stale{background:var(--watch)} .dot.err{background:var(--short)}
+  .top-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  button{font-family:inherit;font-size:13px;color:var(--ink);background:var(--surface-2);
+    border:1px solid var(--border);border-radius:8px;padding:7px 13px;cursor:pointer}
+  button:hover{background:#2a2a28}
+  button.primary{background:var(--series-1);border-color:transparent;color:#fff;font-weight:600}
+  button.primary:hover{background:#2a78d6}
+  button[aria-pressed="true"]{background:#33332f;border-color:#55554f}
+  button:disabled{opacity:.5;cursor:default}
+
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+    gap:10px;margin-bottom:16px}
+  .tile{background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--radius);padding:12px 14px}
+  .tile .k{color:var(--muted);font-size:11px;text-transform:uppercase;
+    letter-spacing:.06em;margin-bottom:5px}
+  .tile .v{font-size:24px;font-weight:640;letter-spacing:-0.02em}
+  .tile .m{color:var(--ink-2);font-size:12px;margin-top:2px}
+
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .bar .grp{display:flex;gap:4px;background:var(--surface);padding:4px;
+    border:1px solid var(--border);border-radius:9px}
+  .bar .lbl{color:var(--muted);font-size:12px;margin-right:2px}
+
+  .layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+  @media (max-width:1080px){.layout{grid-template-columns:1fr}}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+  .card{background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--radius);padding:14px;display:flex;flex-direction:column;gap:10px}
+  .card.enter-long{border-left:3px solid var(--long)}
+  .card.enter-short{border-left:3px solid var(--short)}
+  .card.watch{border-left:3px solid var(--watch)}
+  .chead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .sym{font-size:16px;font-weight:660;letter-spacing:-0.01em}
+  .sym .q{color:var(--muted);font-weight:400;font-size:12px}
+  .badges{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px}
+  .badge{font-size:10.5px;padding:2px 7px;border-radius:999px;
+    border:1px solid var(--border);color:var(--ink-2);background:var(--surface-2);
+    text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+  .pill{font-size:12px;font-weight:640;padding:4px 10px;border-radius:999px;
+    display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .pill.long{background:rgba(12,163,12,.16);color:#4ede4e;border:1px solid rgba(12,163,12,.45)}
+  .pill.short{background:rgba(208,59,59,.16);color:#ff8080;border:1px solid rgba(208,59,59,.45)}
+  .pill.flat{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--border)}
+  .pill.watch{background:rgba(250,178,25,.14);color:#ffce5e;border:1px solid rgba(250,178,25,.4)}
+
+  .price-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .price{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
+  .chg{font-size:12.5px;font-variant-numeric:tabular-nums}
+  .up{color:#4ede4e} .down{color:#ff8080} .neutral{color:var(--ink-2)}
+
+  .scorewrap{margin-top:2px}
+  .scorebar{position:relative;height:7px;background:var(--surface-2);
+    border-radius:4px;overflow:hidden;border:1px solid var(--grid)}
+  .scorebar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--axis)}
+  .scorebar .fill{position:absolute;top:0;bottom:0;border-radius:3px}
+  .scoretxt{display:flex;justify-content:space-between;font-size:11px;
+    color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
+
+  table.lv{width:100%;border-collapse:collapse;font-size:12.5px;
+    font-variant-numeric:tabular-nums}
+  table.lv td{padding:3.5px 0;border-bottom:1px solid var(--grid)}
+  table.lv td:first-child{color:var(--muted);white-space:nowrap;padding-right:8px}
+  table.lv td:last-child{text-align:right;font-weight:520}
+  table.lv tr:last-child td{border-bottom:none}
+
+  details.votes{border-top:1px solid var(--grid);padding-top:8px}
+  details.votes summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;
+    list-style:none;display:flex;justify-content:space-between;align-items:center}
+  details.votes summary::-webkit-details-marker{display:none}
+  details.votes summary::after{content:"▾";color:var(--muted);font-size:11px}
+  details.votes[open] summary::after{content:"▴"}
+  .vote{display:grid;grid-template-columns:106px 54px 1fr;gap:8px;align-items:center;
+    padding:4px 0;font-size:12px;border-bottom:1px solid var(--grid)}
+  .vote:last-child{border-bottom:none}
+  .vote .vn{color:var(--ink-2);font-weight:540}
+  .vote .vb{position:relative;height:5px;background:var(--surface-2);border-radius:3px}
+  .vote .vb i{position:absolute;top:0;bottom:0;border-radius:3px}
+  .vote .vt{color:var(--muted);font-size:11.5px;line-height:1.35}
+
+  .warn{background:rgba(236,131,90,.10);border:1px solid rgba(236,131,90,.32);
+    color:#ffb694;border-radius:7px;padding:7px 9px;font-size:11.5px;
+    display:flex;gap:6px;align-items:flex-start}
+  .warn.block{background:rgba(208,59,59,.12);border-color:rgba(208,59,59,.4);color:#ff9c9c}
+  .warn ul{margin:0;padding-left:15px} .warn li{margin:1px 0}
+
+  aside .panel{background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--radius);padding:14px;margin-bottom:14px}
+  aside h2{font-size:13px;margin:0 0 10px;font-weight:640;letter-spacing:.01em;
+    display:flex;justify-content:space-between;align-items:center}
+  aside h2 span.c{color:var(--muted);font-weight:400;font-size:11.5px}
+  .news-item{padding:8px 0;border-bottom:1px solid var(--grid)}
+  .news-item:last-child{border-bottom:none}
+  .news-item .t{font-size:12.5px;line-height:1.4;color:var(--ink)}
+  .news-item .m{font-size:11px;color:var(--muted);margin-top:3px;
+    display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .sent{font-weight:640;font-variant-numeric:tabular-nums}
+  .tag{background:var(--surface-2);border:1px solid var(--border);
+    border-radius:4px;padding:0 5px;font-size:10px;letter-spacing:.03em}
+
+  .pos-table{width:100%;border-collapse:collapse;font-size:11.5px;
+    font-variant-numeric:tabular-nums}
+  .pos-table th{text-align:left;color:var(--muted);font-weight:500;
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+    padding:0 6px 5px 0;border-bottom:1px solid var(--axis)}
+  .pos-table td{padding:5px 6px 5px 0;border-bottom:1px solid var(--grid)}
+  .pos-table th:last-child,.pos-table td:last-child{text-align:right;padding-right:0}
+
+  .empty{color:var(--muted);font-size:12.5px;padding:14px 0;text-align:center}
+  .err-box{background:rgba(208,59,59,.12);border:1px solid rgba(208,59,59,.4);
+    color:#ff9c9c;border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;font-size:13px}
+  .foot{color:var(--muted);font-size:11.5px;margin-top:22px;line-height:1.6;
+    border-top:1px solid var(--grid);padding-top:14px}
+  .tip{position:fixed;pointer-events:none;background:#000;border:1px solid var(--axis);
+    border-radius:7px;padding:6px 9px;font-size:11.5px;color:var(--ink);
+    opacity:0;transition:opacity .1s;z-index:50;font-variant-numeric:tabular-nums}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <span class="dot" id="statusDot"></span>
+      <div>
+        <h1>Crypto Signal Desk</h1>
+        <div class="sub" id="subline">loading…</div>
+      </div>
+    </div>
+    <div class="top-right">
+      <span class="sub" id="countdown" style="color:var(--muted);font-size:12px"></span>
+      <button id="refreshBtn" class="primary">Rescan now</button>
+    </div>
+  </header>
+
+  <div id="errBox"></div>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="bar">
+    <span class="lbl">Mode</span>
+    <div class="grp" id="modeGrp"></div>
+    <span class="lbl" style="margin-left:6px">Show</span>
+    <div class="grp" id="actionGrp">
+      <button data-action="enter" aria-pressed="true">Firing</button>
+      <button data-action="watch" aria-pressed="true">Watch</button>
+      <button data-action="none" aria-pressed="false">Everything</button>
+    </div>
+    <span class="lbl" style="margin-left:6px">Cap</span>
+    <div class="grp" id="bucketGrp">
+      <button data-bucket="large" aria-pressed="true">Large</button>
+      <button data-bucket="small" aria-pressed="true">Small</button>
+    </div>
+    <span class="lbl" style="margin-left:6px">Side</span>
+    <div class="grp" id="sideGrp">
+      <button data-side="long" aria-pressed="true">↑ Long</button>
+      <button data-side="short" aria-pressed="true">↓ Short</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <main>
+      <div class="cards" id="cards"></div>
+      <div class="foot" id="foot"></div>
+    </main>
+    <aside>
+      <div class="panel" id="paperPanel"></div>
+      <div class="panel" id="livePanel"></div>
+      <div class="panel" id="newsPanel"></div>
+    </aside>
+  </div>
+</div>
+<div class="tip" id="tip" role="status"></div>
+
+<script>
+const INITIAL = {"generated_at": "2026-08-22T18:26:55.307076+00:00", "scan_number": 2, "duration_seconds": 2.01, "exchange": "binance", "market_type": "spot", "universe": [{"symbol": "BTC/USDT", "base": "BTC", "bucket": "large", "rank": 1, "quote_volume": 500000000.0, "change_24h": 0.95, "last": 682.0173572970336}, {"symbol": "ETH/USDT", "base": "ETH", "bucket": "large", "rank": 2, "quote_volume": 250000000.0, "change_24h": 0.34, "last": 31.46424302120092}, {"symbol": "SOL/USDT", "base": "SOL", "bucket": "large", "rank": 3, "quote_volume": 166666666.66666666, "change_24h": 0.37, "last": 217.05526839282308}, {"symbol": "INJ/USDT", "base": "INJ", "bucket": "small", "rank": 4, "quote_volume": 125000000.0, "change_24h": 2.41, "last": 2644.4202243410755}, {"symbol": "SEI/USDT", "base": "SEI", "bucket": "small", "rank": 5, "quote_volume": 100000000.0, "change_24h": -0.97, "last": 75.92495348911358}, {"symbol": "PUMP/USDT", "base": "PUMP", "bucket": "small", "rank": 6, "quote_volume": 83333333.33333333, "change_24h": 5.93, "last": 1037.0830123126648}, {"symbol": "DUMP/USDT", "base": "DUMP", "bucket": "small", "rank": 7, "quote_volume": 71428571.42857143, "change_24h": -5.3, "last": 119.78436652934406}], "signals": {"scalp": [{"symbol": "DUMP/USDT", "base": "DUMP", "bucket": "small", "mode": "scalp", "direction": "short", "action": "watch", "score": -51.7, "confidence": "low", "regime": "trending", "price": 119.78436652934406, "entry": 119.78436652934406, "stop": 119.91564546353314, "targets": [119.65308759515497, 119.52180866096589], "rr": 2.0, "atr": 0.10939911182423098, "atr_pct": 0.091, "risk_pct_move": 0.11, "position_size_units": 2.087083709198032, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 119.916 on the 5m, or a 15m flip against the position", "votes": [{"name": "EMA stack", "score": -1.0, "weight": 2.0, "contribution": -2.0, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.62, "contribution": -1.625, "note": "supertrend short @ 120.118"}, {"name": "Market structure", "score": -1.0, "weight": 1.61, "contribution": -1.61, "note": "lower highs + lower lows"}, {"name": "RSI", "score": -1.0, "weight": 1.5, "contribution": -1.5, "note": "RSI 24.1 \u2014 momentum confirms trend"}, {"name": "VWAP", "score": -0.818, "weight": 1.38, "contribution": -1.125, "note": "-1.23% vs rolling VWAP \u2014 sellers in control"}, {"name": "OBV", "score": -0.989, "weight": 0.9, "contribution": -0.89, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "Bollinger %B", "score": -0.7, "weight": 1.12, "contribution": -0.788, "note": "%B 0.09 \u2014 inside the bands"}, {"name": "Price vs EMA200", "score": -0.536, "weight": 1.25, "contribution": -0.67, "note": "-2.15% below the 200 EMA"}, {"name": "MFI", "score": -0.739, "weight": 0.8, "contribution": -0.591, "note": "MFI 31.5"}, {"name": "MACD", "score": -0.352, "weight": 1.62, "contribution": -0.571, "note": "histogram -0.000639069, contracting (fresh bear cross); line below signal"}, {"name": "StochRSI", "score": 0.0, "weight": 0.45, "contribution": 0.0, "note": "StochRSI K 51 / D 63"}, {"name": "Volume", "score": -0.0, "weight": 1.1, "contribution": -0.0, "note": "volume -0.5\u03c3 \u2014 average participation"}, {"name": "Candle close", "score": 0.0, "weight": 0.6, "contribution": 0.0, "note": "closing in the upper 0% of the bar range"}], "confirm": {"timeframe": "15m", "score": -86.1, "label": "bearish", "notes": ["EMA21 < EMA50", "price -5.7% vs EMA200", "supertrend down", "MACD hist negative", "RSI 15", "lower highs + lower lows"], "rsi": 14.7, "adx": 84.6}, "bias": {"timeframe": "1h", "score": -69.1, "label": "bearish", "notes": ["EMA21 < EMA50", "price -20.4% vs EMA200", "supertrend down", "MACD hist negative", "RSI 3", "no clear structure"], "rsi": 2.9, "adx": 95.8}, "news": {}, "warnings": ["ATR only 0.09% of price \u2014 too quiet to pay fees"], "levels": {"support": [], "resistance": [120.10375884965063, 120.61738130547488, 120.72203692411617, 121.09068708830026], "adx": 59.8, "bb_width_pct": 72.2, "squeeze": false}, "spark": [121.73761291868054, 121.71331309801364, 121.69158849391256, 121.62748196212151, 121.58156905400345, 121.5646115024517, 121.55312551585592, 121.46164699033633, 121.44220182546265, 121.47799041084808, 121.47370346634703, 121.43545084363016, 121.34973839523435, 121.3356204945461, 121.18409656741912, 121.17326876682895, 121.16365841987285, 121.08330695283364, 120.95076451869554, 120.9345550785354, 120.90683233730176, 121.06839616991603, 121.01785048045221, 120.90910676340553, 120.72603151206194, 120.76996056065036, 120.78197497018179, 120.63556286094212, 120.6013295988605, 120.63158301106917, 120.66127834668315, 120.67866067361427, 120.7117488037351, 120.59017237774964, 120.54179305359254, 120.56934871320583, 120.54157065234607, 120.58370437490083, 120.46969537857609, 120.44153790897171, 120.37340202436198, 120.41662353368099, 120.41314450846109, 120.36883197010923, 120.39674804905998, 120.25445350371949, 120.30268808228071, 120.20448670957391, 120.15959632156687, 119.99394489751039, 119.91358810225933, 119.96363752114551, 119.95006138851764, 120.10048901139044, 120.04216934202853, 120.05645223943117, 119.95667836946441, 119.89487714535045, 119.84107104792287, 119.78436652934406], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:55.020113+00:00", "change_24h": -5.3, "quote_volume": 71428571.42857143}, {"symbol": "PUMP/USDT", "base": "PUMP", "bucket": "small", "mode": "scalp", "direction": "long", "action": "watch", "score": 46.3, "confidence": "low", "regime": "trending", "price": 1037.0830123126648, "entry": 1037.0830123126648, "stop": 1035.9109713907778, "targets": [1038.2550532345517, 1039.4270941564387], "rr": 2.0, "atr": 0.9767007682390594, "atr_pct": 0.094, "risk_pct_move": 0.113, "position_size_units": 0.24106074155289395, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 1035.91 on the 5m, or a 15m flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 2.0, "contribution": 2.0, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.62, "contribution": 1.625, "note": "supertrend long @ 1033.59"}, {"name": "Market structure", "score": 1.0, "weight": 1.61, "contribution": 1.61, "note": "higher highs + higher lows"}, {"name": "Bollinger %B", "score": 1.0, "weight": 1.12, "contribution": 1.125, "note": "%B 1.21 \u2014 riding above the upper band"}, {"name": "VWAP", "score": 0.751, "weight": 1.38, "contribution": 1.033, "note": "+1.13% vs rolling VWAP \u2014 buyers in control"}, {"name": "OBV", "score": 1.0, "weight": 0.9, "contribution": 0.9, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "RSI", "score": 0.55, "weight": 1.5, "contribution": 0.825, "note": "RSI 79.7 \u2014 strong but overbought, chase risk"}, {"name": "MFI", "score": 0.898, "weight": 0.8, "contribution": 0.719, "note": "MFI 72.5"}, {"name": "Price vs EMA200", "score": 0.535, "weight": 1.25, "contribution": 0.669, "note": "+2.14% above the 200 EMA"}, {"name": "RSI divergence", "score": -0.9, "weight": 0.54, "contribution": -0.486, "note": "bearish divergence \u2014 higher high in price, lower high in RSI (82\u219267)"}, {"name": "Candle close", "score": 0.592, "weight": 0.6, "contribution": 0.355, "note": "closing in the upper 74% of the bar range"}, {"name": "Volume", "score": 0.197, "weight": 1.1, "contribution": 0.217, "note": "volume +0.5\u03c3 \u2014 average participation"}, {"name": "StochRSI", "score": -0.35, "weight": 0.45, "contribution": -0.158, "note": "StochRSI pinned overbought (100)"}, {"name": "MACD", "score": 0.058, "weight": 1.62, "contribution": 0.094, "note": "histogram +0.207937, expanding; line above signal"}], "confirm": {"timeframe": "15m", "score": 85.9, "label": "bullish", "notes": ["EMA21 > EMA50", "price +6.3% vs EMA200", "supertrend up", "MACD hist positive", "RSI 87", "higher highs + higher lows"], "rsi": 87.4, "adx": 72.8}, "bias": {"timeframe": "1h", "score": 69.2, "label": "bullish", "notes": ["EMA21 > EMA50", "price +26.2% vs EMA200", "supertrend up", "MACD hist positive", "RSI 94", "no clear structure"], "rsi": 94.3, "adx": 97.8}, "news": {}, "warnings": ["ATR only 0.09% of price \u2014 too quiet to pay fees"], "levels": {"support": [1031.6185989013215, 1031.1907998824074, 1025.172498285974, 1019.3742608167385], "resistance": [], "adx": 38.7, "bb_width_pct": 48.6, "squeeze": false}, "spark": [1021.6155739430827, 1022.4445831410986, 1022.381178570837, 1022.7120231399832, 1023.6750411295588, 1024.3415321857462, 1023.5208071630319, 1024.0530966424487, 1025.5158981793954, 1026.0580197359552, 1027.021919651005, 1026.2461326573105, 1026.4396369496337, 1026.928927133077, 1026.7063924653544, 1026.3255619821064, 1026.7308981171793, 1027.0527652697338, 1026.6172291859464, 1025.993181085053, 1025.2484287038237, 1025.6522806086518, 1025.2312469724466, 1026.2871416109997, 1027.1244919413896, 1027.0166556221352, 1028.0300723324146, 1027.8775863719782, 1027.6014733724935, 1028.6528375838598, 1028.8719210069382, 1028.9810187531943, 1029.7348462994187, 1029.2785289276462, 1029.5049803118286, 1030.6461799117958, 1030.7609016751292, 1031.4937789557541, 1032.3369857689418, 1032.8374707027358, 1033.1899014317903, 1032.408922766205, 1031.6755428887052, 1032.3185862307269, 1032.397626391409, 1031.9993393237012, 1032.9756142389933, 1033.3933736316917, 1032.5683074629114, 1033.0534411468814, 1032.64670348101, 1032.5511493530691, 1032.2387043229862, 1032.5394222239393, 1032.974712860007, 1033.474667781592, 1034.3318607203792, 1035.26600595355, 1035.9404684439805, 1037.0830123126648], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:54.945329+00:00", "change_24h": 5.93, "quote_volume": 83333333.33333333}, {"symbol": "SOL/USDT", "base": "SOL", "bucket": "large", "mode": "scalp", "direction": "long", "action": "none", "score": 21.5, "confidence": "none", "regime": "trending", "price": 217.05526839282308, "entry": 217.05526839282308, "stop": 216.96172685803086, "targets": [217.0916187386068, 217.24235146240753], "rr": 2.0, "atr": 0.07795127899350777, "atr_pct": 0.036, "risk_pct_move": 0.043, "position_size_units": 1.1517803822552424, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 216.962 on the 5m, or a 15m flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 2.0, "contribution": 2.0, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.62, "contribution": 1.625, "note": "supertrend long @ 217.033"}, {"name": "Market structure", "score": 1.0, "weight": 1.61, "contribution": 1.61, "note": "higher highs + higher lows"}, {"name": "OBV", "score": 0.654, "weight": 0.9, "contribution": 0.589, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "Volume", "score": -0.471, "weight": 1.1, "contribution": -0.518, "note": "volume +1.2\u03c3 \u2014 average participation"}, {"name": "Candle close", "score": -0.701, "weight": 0.6, "contribution": -0.421, "note": "closing in the lower 88% of the bar range"}, {"name": "Bollinger %B", "score": -0.326, "weight": 1.12, "contribution": -0.367, "note": "%B 0.31 \u2014 inside the bands"}, {"name": "MFI", "score": 0.275, "weight": 0.8, "contribution": 0.22, "note": "MFI 56.9"}, {"name": "RSI", "score": -0.118, "weight": 1.5, "contribution": -0.177, "note": "RSI 47.4 \u2014 momentum confirms trend"}, {"name": "StochRSI", "score": 0.35, "weight": 0.45, "contribution": 0.158, "note": "StochRSI pinned oversold (8)"}, {"name": "MACD", "score": -0.015, "weight": 1.62, "contribution": -0.025, "note": "histogram -0.0114953, contracting; line below signal"}, {"name": "Price vs EMA200", "score": 0.019, "weight": 1.25, "contribution": 0.024, "note": "+0.08% above the 200 EMA"}, {"name": "VWAP", "score": 0.013, "weight": 1.38, "contribution": 0.017, "note": "+0.02% vs rolling VWAP \u2014 buyers in control"}], "confirm": {"timeframe": "15m", "score": 48.4, "label": "bullish", "notes": ["EMA21 > EMA50", "price +0.3% vs EMA200", "supertrend up", "MACD hist positive", "RSI 54", "partial bullish structure"], "rsi": 53.7, "adx": 17.8}, "bias": {"timeframe": "1h", "score": 61.4, "label": "bullish", "notes": ["EMA21 > EMA50", "price +0.5% vs EMA200", "supertrend up", "MACD hist negative", "RSI 58", "higher highs + higher lows"], "rsi": 58.1, "adx": 18.7}, "news": {}, "warnings": ["ATR only 0.04% of price \u2014 too quiet to pay fees"], "levels": {"support": [217.03461637536648, 217.03359364269167, 216.9535963248782, 216.82329287304134], "resistance": [217.0916187386068, 217.14822312902817, 217.1759854164552, 217.24730915095896], "adx": 25.4, "bb_width_pct": 57.0, "squeeze": false}, "spark": [216.91618173519146, 216.85956671258393, 216.92601379770917, 216.86959605489096, 216.98979115971338, 216.98029694502296, 217.0363821133587, 217.02210364157858, 217.04662424603333, 217.14323669818356, 217.12177764219885, 217.04482954940653, 217.1352603037507, 217.12878415613653, 217.17413937605625, 217.23765200335288, 217.18624490428348, 217.14049798015506, 217.0555591601906, 217.0951844907868, 217.08811352527945, 217.08481492656983, 217.07575806740562, 217.01074995741277, 217.0033618538967, 216.9865029263452, 216.93522086949775, 216.95236529996203, 216.85742062875866, 216.87538005689018, 216.90001634489616, 216.88451762295878, 216.86149071910756, 216.80272266708073, 216.8291768128934, 216.8458089939833, 216.83855996281738, 216.85640008805834, 216.85778554206942, 216.89959700121827, 216.91924968188587, 216.97638019826704, 217.08798819801171, 217.13603291323318, 217.09764497583802, 217.11051074912965, 217.07707853495634, 217.08880344251486, 217.1115082937631, 217.10581500087216, 217.15668228578005, 217.16191959360864, 217.26056059840982, 217.20997785078774, 217.2392721820289, 217.24568420709318, 217.08251577531826, 217.10150724442704, 217.1321431554545, 217.05526839282308], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:54.223328+00:00", "change_24h": 0.37, "quote_volume": 166666666.66666666}, {"symbol": "SEI/USDT", "base": "SEI", "bucket": "small", "mode": "scalp", "direction": "flat", "action": "none", "score": -19.9, "confidence": "none", "regime": "compression", "price": 75.92495348911358, "entry": 75.92495348911358, "stop": 75.82635287226493, "targets": [75.82635287226493, 75.72775225541629], "rr": 2.0, "atr": 0.08216718070720203, "atr_pct": 0.108, "risk_pct_move": 0.13, "position_size_units": 3.2927250990788686, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 75.8264 on the 5m, or a 15m flip against the position", "votes": [{"name": "EMA stack", "score": -1.0, "weight": 1.28, "contribution": -1.28, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "OBV", "score": -1.0, "weight": 1.12, "contribution": -1.125, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "Supertrend", "score": -1.0, "weight": 1.04, "contribution": -1.04, "note": "supertrend short @ 76.1961"}, {"name": "Bollinger %B", "score": 1.0, "weight": 0.84, "contribution": 0.84, "note": "%B -0.19 \u2014 fading band edge"}, {"name": "RSI", "score": 0.782, "weight": 0.98, "contribution": 0.767, "note": "RSI 30.4 \u2014 mean-reversion read in a compression market"}, {"name": "Market structure", "score": 0.4, "weight": 1.4, "contribution": 0.56, "note": "partial bullish structure"}, {"name": "VWAP", "score": -0.504, "weight": 0.88, "contribution": -0.444, "note": "-0.76% vs rolling VWAP \u2014 sellers in control"}, {"name": "MACD", "score": -0.356, "weight": 1.04, "contribution": -0.37, "note": "histogram -0.00164821, contracting (fresh bear cross); line below signal"}, {"name": "MFI", "score": 0.284, "weight": 1.0, "contribution": 0.284, "note": "MFI 42.1"}, {"name": "Candle close", "score": -0.286, "weight": 0.6, "contribution": -0.172, "note": "closing in the lower 36% of the bar range"}, {"name": "Price vs EMA200", "score": -0.213, "weight": 0.8, "contribution": -0.17, "note": "-0.85% below the 200 EMA"}, {"name": "StochRSI", "score": 0.0, "weight": 0.7, "contribution": 0.0, "note": "StochRSI K 37 / D 64"}, {"name": "Volume", "score": -0.0, "weight": 1.38, "contribution": -0.0, "note": "volume -0.6\u03c3 \u2014 average participation"}], "confirm": {"timeframe": "15m", "score": -49.3, "label": "bearish", "notes": ["EMA21 < EMA50", "price -1.1% vs EMA200", "supertrend down", "MACD hist negative", "RSI 23", "partial bullish structure"], "rsi": 22.5, "adx": 31.2}, "bias": {"timeframe": "1h", "score": -49.3, "label": "bearish", "notes": ["EMA21 < EMA50", "price -1.7% vs EMA200", "supertrend down", "MACD hist negative", "RSI 32", "partial bullish structure"], "rsi": 31.9, "adx": 15.3}, "news": {}, "warnings": ["volatility compression \u2014 breakout pending, direction unproven"], "levels": {"support": [], "resistance": [76.17539715614221, 76.19395879213108, 76.22827610752462, 76.36112792017624], "adx": 31.8, "bb_width_pct": 19.7, "squeeze": false}, "spark": [76.78392221032978, 76.76075571757089, 76.81423508335989, 76.7261981264864, 76.74367993150305, 76.79996747690544, 76.8106689177048, 76.7359257118306, 76.72114055424338, 76.65491876348179, 76.68952665658604, 76.70022067125822, 76.74716704379657, 76.71637618617785, 76.72663619675257, 76.71402145854199, 76.70354108343821, 76.63493024910218, 76.6238721505116, 76.59010859496617, 76.59700877343124, 76.55007160849756, 76.5902078318543, 76.47722253861957, 76.37429184448334, 76.420648285473, 76.40176263705531, 76.34892346181094, 76.36623123077838, 76.29154608865895, 76.2415124954561, 76.23217827222706, 76.2680342425924, 76.33367852228415, 76.34217029218684, 76.32687780972572, 76.33244526607956, 76.33975974977783, 76.31009488591117, 76.30763583787933, 76.20220881482278, 76.15533905727987, 76.09700356228804, 76.13645718362659, 76.10387267671, 76.15831019876916, 76.18281485790064, 76.14102971169116, 76.05420562797933, 76.10820131460056, 76.0933621020768, 76.11102038365794, 76.12138659826653, 76.1095678981236, 76.03664055802061, 76.06499460943972, 76.13441883530425, 76.0761364867119, 75.98713683307675, 75.92495348911358], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:54.868546+00:00", "change_24h": -0.97, "quote_volume": 100000000.0}, {"symbol": "INJ/USDT", "base": "INJ", "bucket": "small", "mode": "scalp", "direction": "flat", "action": "none", "score": 11.1, "confidence": "none", "regime": "compression", "price": 2644.4202243410755, "entry": 2644.4202243410755, "stop": 2640.9096872289947, "targets": [2640.9096872289947, 2637.399150116914], "rr": 2.0, "atr": 2.9254475934005337, "atr_pct": 0.111, "risk_pct_move": 0.133, "position_size_units": 0.09453868099284177, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 2640.91 on the 5m, or a 15m flip against the position", "votes": [{"name": "Market structure", "score": 1.0, "weight": 1.4, "contribution": 1.4, "note": "higher highs + higher lows"}, {"name": "Supertrend", "score": 1.0, "weight": 1.04, "contribution": 1.04, "note": "supertrend long @ 2640.81"}, {"name": "Volume", "score": -0.595, "weight": 1.38, "contribution": -0.818, "note": "volume +1.5\u03c3 \u2014 average participation"}, {"name": "Bollinger %B", "score": 0.65, "weight": 0.84, "contribution": 0.546, "note": "%B 0.23 \u2014 fading band edge"}, {"name": "EMA stack", "score": 0.4, "weight": 1.28, "contribution": 0.512, "note": "short EMAs turning up, 50 not aligned"}, {"name": "MACD", "score": -0.364, "weight": 1.04, "contribution": -0.378, "note": "histogram -0.125599, contracting (fresh bear cross); line below signal"}, {"name": "MFI", "score": -0.304, "weight": 1.0, "contribution": -0.304, "note": "MFI 58.5"}, {"name": "Candle close", "score": -0.496, "weight": 0.6, "contribution": -0.298, "note": "closing in the lower 62% of the bar range"}, {"name": "RSI", "score": 0.178, "weight": 0.98, "contribution": 0.175, "note": "RSI 45.5 \u2014 mean-reversion read in a compression market"}, {"name": "VWAP", "score": -0.121, "weight": 0.88, "contribution": -0.107, "note": "-0.18% vs rolling VWAP \u2014 sellers in control"}, {"name": "Price vs EMA200", "score": 0.05, "weight": 0.8, "contribution": 0.04, "note": "+0.20% above the 200 EMA"}, {"name": "OBV", "score": -0.022, "weight": 1.12, "contribution": -0.025, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "StochRSI", "score": 0.0, "weight": 0.7, "contribution": 0.0, "note": "StochRSI K 27 / D 27"}], "confirm": {"timeframe": "15m", "score": -14.0, "label": "neutral", "notes": ["EMA21 > EMA50", "price +1.1% vs EMA200", "supertrend down", "MACD hist negative", "RSI 47", "lower highs + lower lows"], "rsi": 46.7, "adx": 14.8}, "bias": {"timeframe": "1h", "score": 65.6, "label": "bullish", "notes": ["EMA21 > EMA50", "price +2.0% vs EMA200", "supertrend up", "MACD hist negative", "RSI 59", "higher highs + higher lows"], "rsi": 59.4, "adx": 28.4}, "news": {}, "warnings": ["ADX 13 below 18 \u2014 choppy, low follow-through", "volatility compression \u2014 breakout pending, direction unproven"], "levels": {"support": [2644.3424930427946, 2643.507996846987, 2643.4387752711255, 2641.3202737866254], "resistance": [2647.5542794191488, 2647.941968087005, 2649.7207616279634, 2650.0411831074716], "adx": 13.2, "bb_width_pct": 5.0, "squeeze": true}, "spark": [2649.3150037465457, 2648.5702445643633, 2648.757467783423, 2647.1159051538725, 2643.513113349932, 2645.171018769222, 2646.7015706864336, 2647.109743257349, 2647.029818226519, 2646.4316959309404, 2645.8387002818695, 2653.2472742631744, 2652.9079606696096, 2655.1108530196498, 2653.946854277342, 2651.8190015983296, 2655.202622781625, 2654.663459705246, 2655.7765777214336, 2653.6558871837683, 2654.9083863958413, 2653.123424258898, 2651.0480634126825, 2650.7710616233708, 2646.290211184062, 2645.6628791807507, 2641.812292654466, 2637.530724100258, 2634.469109047602, 2639.9275496823657, 2639.745579974858, 2640.4054152092745, 2642.913704672853, 2644.1161626955277, 2642.117527916882, 2643.6247391325114, 2642.20592144866, 2644.261127494714, 2646.043945705675, 2642.837704785651, 2644.1288482875498, 2642.7752396293067, 2645.226812194923, 2646.6324943654877, 2647.5114878308923, 2645.1675827543013, 2644.036874216157, 2648.6816719769486, 2647.0704689271583, 2647.721432916784, 2645.4255070584404, 2646.249561322624, 2649.3453174525457, 2650.0470288818815, 2650.331823494678, 2646.0179773816653, 2645.983548616209, 2647.721037596947, 2647.143174153522, 2644.4202243410755], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:53.860404+00:00", "change_24h": 2.41, "quote_volume": 125000000.0}, {"symbol": "BTC/USDT", "base": "BTC", "bucket": "large", "mode": "scalp", "direction": "flat", "action": "none", "score": 3.7, "confidence": "none", "regime": "compression", "price": 682.0173572970336, "entry": 682.0173572970336, "stop": 681.581501357688, "targets": [681.581501357688, 681.1456454183424], "rr": 2.0, "atr": 0.36321328278807113, "atr_pct": 0.053, "risk_pct_move": 0.064, "position_size_units": 0.3665595858011565, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 681.582 on the 5m, or a 15m flip against the position", "votes": [{"name": "Market structure", "score": 1.0, "weight": 1.4, "contribution": 1.4, "note": "higher highs + higher lows"}, {"name": "EMA stack", "score": 1.0, "weight": 1.28, "contribution": 1.28, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.04, "contribution": -1.04, "note": "supertrend short @ 682.496"}, {"name": "Bollinger %B", "score": -0.545, "weight": 0.84, "contribution": -0.458, "note": "%B 0.73 \u2014 fading band edge"}, {"name": "OBV", "score": -0.228, "weight": 1.12, "contribution": -0.257, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "RSI", "score": -0.136, "weight": 0.98, "contribution": -0.133, "note": "RSI 53.4 \u2014 mean-reversion read in a compression market"}, {"name": "Candle close", "score": 0.119, "weight": 0.6, "contribution": 0.072, "note": "closing in the upper 15% of the bar range"}, {"name": "MFI", "score": -0.026, "weight": 1.0, "contribution": -0.026, "note": "MFI 50.7"}, {"name": "Price vs EMA200", "score": 0.021, "weight": 0.8, "contribution": 0.017, "note": "+0.09% above the 200 EMA"}, {"name": "VWAP", "score": 0.019, "weight": 0.88, "contribution": 0.016, "note": "+0.03% vs rolling VWAP \u2014 buyers in control"}, {"name": "MACD", "score": 0.013, "weight": 1.04, "contribution": 0.013, "note": "histogram +0.0298513, expanding; line above signal"}, {"name": "StochRSI", "score": 0.0, "weight": 0.7, "contribution": 0.0, "note": "StochRSI K 68 / D 68"}, {"name": "Volume", "score": 0.0, "weight": 1.38, "contribution": 0.0, "note": "volume -1.3\u03c3 \u2014 thin participation, move is unconvincing"}], "confirm": {"timeframe": "15m", "score": 47.2, "label": "bullish", "notes": ["EMA21 > EMA50", "price +0.3% vs EMA200", "supertrend up", "MACD hist positive", "RSI 51", "partial bullish structure"], "rsi": 51.2, "adx": 14.8}, "bias": {"timeframe": "1h", "score": 61.3, "label": "bullish", "notes": ["EMA21 > EMA50", "price +1.2% vs EMA200", "supertrend up", "MACD hist negative", "RSI 54", "higher highs + higher lows"], "rsi": 54.1, "adx": 19.6}, "news": {}, "warnings": ["ADX 13 below 18 \u2014 choppy, low follow-through", "ATR only 0.05% of price \u2014 too quiet to pay fees", "volatility compression \u2014 breakout pending, direction unproven"], "levels": {"support": [681.0735099212721, 680.9882297200114, 680.9881993312428, 680.5415316483529], "resistance": [682.2764425289654, 682.3661780932571, 682.41678137584, 683.482813671808], "adx": 12.5, "bb_width_pct": 10.0, "squeeze": false}, "spark": [680.4286798231516, 680.2631501070703, 680.2325592275037, 680.6278547654036, 680.96422413398, 680.7995964545912, 680.6649781833801, 680.7366235587783, 680.6402620338258, 680.8336900193178, 680.5608083752895, 680.7679730956914, 680.9587126243076, 681.3647718310639, 681.7208192989585, 682.2124215308604, 681.6633311288917, 681.168917115322, 681.2858588785417, 681.304529250436, 681.8122507440921, 682.5799749577438, 682.618748893741, 682.8688940080795, 683.1999505454161, 683.054215098353, 682.976593941896, 682.8573424719865, 682.6951611741009, 682.6701791607439, 682.2199270695512, 682.2224238915344, 681.9563863237024, 681.4600534337783, 681.3051500439758, 681.2528087278978, 681.5344167189385, 681.6668774375632, 682.1302748859251, 682.2555693580207, 681.560727563854, 681.0410020742486, 680.9940357914334, 681.5220273469937, 681.693873995232, 681.5809022917391, 681.4833437480486, 681.0396545796702, 681.39435828859, 681.5302983265768, 681.8584758460311, 682.1112836830308, 681.9941887411329, 682.2355651841395, 682.0682390679484, 682.0030787704726, 681.8519265725643, 682.0125258944886, 681.7783610580381, 682.0173572970336], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:54.020928+00:00", "change_24h": 0.95, "quote_volume": 500000000.0}, {"symbol": "ETH/USDT", "base": "ETH", "bucket": "large", "mode": "scalp", "direction": "flat", "action": "none", "score": -0.7, "confidence": "none", "regime": "compression", "price": 31.46424302120092, "entry": 31.46424302120092, "stop": 31.43507963846286, "targets": [31.43507963846286, 31.405916255724797], "rr": 2.0, "atr": 0.024302818948384233, "atr_pct": 0.077, "risk_pct_move": 0.093, "position_size_units": 7.945527239652564, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 31.4351 on the 5m, or a 15m flip against the position", "votes": [{"name": "EMA stack", "score": -1.0, "weight": 1.28, "contribution": -1.28, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.04, "contribution": -1.04, "note": "supertrend short @ 31.5184"}, {"name": "OBV", "score": 0.708, "weight": 1.12, "contribution": 0.796, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "RSI divergence", "score": 0.9, "weight": 0.84, "contribution": 0.756, "note": "bullish divergence \u2014 lower low in price, higher low in RSI (38\u219240)"}, {"name": "Market structure", "score": 0.4, "weight": 1.4, "contribution": 0.56, "note": "partial bullish structure"}, {"name": "RSI", "score": 0.083, "weight": 0.98, "contribution": 0.081, "note": "RSI 47.9 \u2014 mean-reversion read in a compression market"}, {"name": "VWAP", "score": -0.085, "weight": 0.88, "contribution": -0.075, "note": "-0.13% vs rolling VWAP \u2014 sellers in control"}, {"name": "Bollinger %B", "score": -0.067, "weight": 0.84, "contribution": -0.057, "note": "%B 0.53 \u2014 fading band edge"}, {"name": "MFI", "score": -0.023, "weight": 1.0, "contribution": -0.023, "note": "MFI 50.6"}, {"name": "MACD", "score": 0.018, "weight": 1.04, "contribution": 0.019, "note": "histogram +0.00196913, expanding; line above signal"}, {"name": "Price vs EMA200", "score": 0.015, "weight": 0.8, "contribution": 0.012, "note": "+0.06% above the 200 EMA"}, {"name": "StochRSI", "score": 0.0, "weight": 0.7, "contribution": 0.0, "note": "StochRSI K 78 / D 65"}, {"name": "Volume", "score": 0.0, "weight": 1.38, "contribution": 0.0, "note": "volume -0.2\u03c3 \u2014 average participation"}, {"name": "Candle close", "score": 0.0, "weight": 0.6, "contribution": 0.0, "note": "closing in the upper 0% of the bar range"}], "confirm": {"timeframe": "15m", "score": -16.6, "label": "mildly bearish", "notes": ["EMA21 > EMA50", "price +0.3% vs EMA200", "supertrend down", "MACD hist negative", "RSI 47", "lower highs + lower lows"], "rsi": 47.1, "adx": 15.8}, "bias": {"timeframe": "1h", "score": 54.7, "label": "bullish", "notes": ["EMA21 > EMA50", "price -1.0% vs EMA200", "supertrend up", "MACD hist negative", "RSI 56", "higher highs + higher lows"], "rsi": 55.7, "adx": 32.5}, "news": {}, "warnings": ["counter-trend to the 1h bias (bullish) \u2014 size down or skip", "ATR only 0.08% of price \u2014 too quiet to pay fees", "volatility compression \u2014 breakout pending, direction unproven"], "levels": {"support": [31.46147902120492, 31.454129552339136, 31.453398705505894, 31.443382309534073], "resistance": [31.484749107932664, 31.485646524610175, 31.496884482720027, 31.503933769609002], "adx": 23.8, "bb_width_pct": 0.8, "squeeze": true}, "spark": [31.530585680309603, 31.5148232067512, 31.52562085573705, 31.522219144616745, 31.513824125809407, 31.524005512410472, 31.54154076570637, 31.54144176054307, 31.573646507646256, 31.588523999646, 31.588195931063712, 31.59117284409238, 31.581604900601615, 31.566994085622788, 31.54734507899102, 31.544635324007412, 31.547700623315393, 31.540767083210177, 31.500849591705848, 31.479473701610384, 31.465388764358934, 31.475861830194976, 31.496386371337778, 31.481997263647454, 31.470801707880053, 31.497431507738717, 31.51337010732049, 31.52477209505417, 31.528723207736864, 31.559370799922196, 31.571143517203794, 31.529658418295412, 31.484632834081644, 31.47628343776058, 31.477014241694924, 31.461003398250032, 31.466922137413086, 31.47740373555616, 31.494520474267315, 31.496574880862514, 31.499230031009887, 31.474446314780778, 31.48605522921705, 31.4550204539401, 31.44615320105783, 31.455625893159922, 31.468914221732213, 31.46754926177621, 31.438484247699467, 31.460595653049108, 31.45474101177356, 31.46617443479339, 31.477167465924904, 31.47410598530088, 31.455939096527622, 31.43743266116212, 31.452244451483587, 31.457985983209237, 31.459811383035273, 31.46424302120092], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:53.878223+00:00", "change_24h": 0.34, "quote_volume": 250000000.0}], "swing": [{"symbol": "PUMP/USDT", "base": "PUMP", "bucket": "small", "mode": "swing", "direction": "long", "action": "enter", "score": 75.5, "confidence": "high", "regime": "trending", "price": 1037.0830123126648, "entry": 1037.0830123126648, "stop": 1019.6605833590571, "targets": [1063.2166557430762, 1089.3502991734877], "rr": 3.0, "atr": 10.889018096004818, "atr_pct": 1.05, "risk_pct_move": 1.68, "position_size_units": 0.24106074155289392, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 1019.66 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 2.0, "contribution": 2.0, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.62, "contribution": 1.625, "note": "supertrend long @ 997.709"}, {"name": "VWAP", "score": 1.0, "weight": 1.38, "contribution": 1.375, "note": "+58.96% vs rolling VWAP \u2014 buyers in control"}, {"name": "Price vs EMA200", "score": 1.0, "weight": 1.25, "contribution": 1.25, "note": "+86.29% above the 200 EMA"}, {"name": "OBV", "score": 1.0, "weight": 0.9, "contribution": 0.9, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "RSI", "score": 0.55, "weight": 1.5, "contribution": 0.825, "note": "RSI 100.0 \u2014 strong but overbought, chase risk"}, {"name": "Bollinger %B", "score": 0.696, "weight": 1.12, "contribution": 0.783, "note": "%B 0.91 \u2014 inside the bands"}, {"name": "Candle close", "score": 0.777, "weight": 0.6, "contribution": 0.466, "note": "closing in the upper 97% of the bar range"}, {"name": "MACD", "score": 0.245, "weight": 1.62, "contribution": 0.398, "note": "histogram +1.69517, contracting; line above signal"}, {"name": "StochRSI", "score": -0.35, "weight": 0.45, "contribution": -0.158, "note": "StochRSI pinned overbought (100)"}, {"name": "Volume", "score": 0.0, "weight": 1.1, "contribution": 0.0, "note": "volume -0.6\u03c3 \u2014 average participation"}, {"name": "Market structure", "score": 0.0, "weight": 1.61, "contribution": 0.0, "note": "no clear structure"}], "confirm": {"timeframe": "1d", "score": 89.7, "label": "bullish", "notes": ["EMA21 > EMA50", "price +187.5% vs EMA200", "supertrend up", "MACD hist positive", "RSI 99", "partial bullish structure"], "rsi": 99.2, "adx": 74.1}, "bias": {"timeframe": "1d", "score": 89.7, "label": "bullish", "notes": ["EMA21 > EMA50", "price +187.5% vs EMA200", "supertrend up", "MACD hist positive", "RSI 99", "partial bullish structure"], "rsi": 99.2, "adx": 74.1}, "news": {}, "warnings": [], "levels": {"support": [], "resistance": [], "adx": 100.0, "bb_width_pct": 89.5, "squeeze": false}, "spark": [553.753931105676, 558.0683710970274, 565.0366040714005, 571.0376750143607, 575.7870016158021, 584.520152118565, 594.7100796092882, 600.4168309648911, 605.8678888825274, 607.8073153573246, 611.5296129380756, 619.2390425395843, 626.5808868525486, 634.8596506730418, 641.1576791601175, 647.5433225640231, 651.82566567799, 662.1593375078677, 668.6812493438671, 674.3379169101443, 682.7427029150608, 688.1286464838753, 693.0968094570399, 699.5517153885248, 704.6339135710783, 706.3570755558248, 716.3817736156442, 724.5869248799579, 736.2937923575173, 740.713161154536, 753.1860379514263, 761.4463365442588, 772.3557592031374, 775.1732357387797, 792.598877769129, 802.4798506060703, 807.6904757813692, 817.9864583709149, 829.5307762870813, 835.5592612931861, 845.28957352508, 854.1858565233928, 862.2779870884356, 876.2353696740645, 886.0380152602094, 897.8847588029331, 905.1556287095136, 918.6260426952826, 928.5377641605182, 941.6373663004806, 955.9168082706094, 960.2979438443543, 965.0417817898974, 979.0189472946879, 984.2494211241655, 995.1554653168346, 1004.8158695332252, 1016.0198009350526, 1026.2461326573105, 1037.0830123126648], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:55.269541+00:00", "change_24h": 5.93, "quote_volume": 83333333.33333333}, {"symbol": "DUMP/USDT", "base": "DUMP", "bucket": "small", "mode": "swing", "direction": "short", "action": "enter", "score": -73.2, "confidence": "moderate", "regime": "trending", "price": 119.78436652934406, "entry": 119.78436652934406, "stop": 122.08325396990962, "targets": [116.33603536849571, 112.88770420764736], "rr": 3.0, "atr": 1.4368046503534757, "atr_pct": 1.199, "risk_pct_move": 1.919, "position_size_units": 2.087083709198032, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 122.083 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": -1.0, "weight": 2.0, "contribution": -2.0, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.62, "contribution": -1.625, "note": "supertrend short @ 124.805"}, {"name": "VWAP", "score": -1.0, "weight": 1.38, "contribution": -1.375, "note": "-34.83% vs rolling VWAP \u2014 sellers in control"}, {"name": "Price vs EMA200", "score": -1.0, "weight": 1.25, "contribution": -1.25, "note": "-47.60% below the 200 EMA"}, {"name": "OBV", "score": -1.0, "weight": 0.9, "contribution": -0.9, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "RSI", "score": -0.55, "weight": 1.5, "contribution": -0.825, "note": "RSI 0.5 \u2014 weak but oversold, bounce risk"}, {"name": "Bollinger %B", "score": -0.719, "weight": 1.12, "contribution": -0.809, "note": "%B 0.08 \u2014 inside the bands"}, {"name": "MFI", "score": -1.0, "weight": 0.8, "contribution": -0.8, "note": "MFI 0.0"}, {"name": "Candle close", "score": -0.734, "weight": 0.6, "contribution": -0.44, "note": "closing in the lower 92% of the bar range"}, {"name": "MACD", "score": 0.126, "weight": 1.62, "contribution": 0.205, "note": "histogram +0.100639, contracting; line above signal"}, {"name": "StochRSI", "score": 0.35, "weight": 0.45, "contribution": 0.158, "note": "StochRSI pinned oversold (0)"}, {"name": "Volume", "score": -0.002, "weight": 1.1, "contribution": -0.002, "note": "volume +0.0\u03c3 \u2014 average participation"}, {"name": "Market structure", "score": 0.0, "weight": 1.61, "contribution": 0.0, "note": "no clear structure"}], "confirm": {"timeframe": "1d", "score": -76.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -61.9% vs EMA200", "supertrend down", "MACD hist negative", "RSI 5", "partial bullish structure"], "rsi": 5.3, "adx": 65.7}, "bias": {"timeframe": "1d", "score": -76.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -61.9% vs EMA200", "supertrend down", "MACD hist negative", "RSI 5", "partial bullish structure"], "rsi": 5.3, "adx": 65.7}, "news": {}, "warnings": [], "levels": {"support": [], "resistance": [], "adx": 99.9, "bb_width_pct": 91.6, "squeeze": false}, "spark": [195.45280233934855, 194.6893050292549, 193.35079035960345, 192.0025579378669, 190.9692352189252, 189.27493203885427, 188.52155088208593, 188.7591054733659, 187.75460216076107, 184.5298414030543, 181.80283910452772, 180.37932114777718, 178.6982985176262, 177.60427836401905, 176.20700974902672, 174.7537277451534, 172.21534969307268, 170.0320098413474, 167.70927802594852, 166.67854869654278, 165.7433944311538, 163.5777014185143, 162.46627366690507, 161.6322016331693, 160.6252708359907, 158.92272310965163, 157.41219045505974, 156.39187309220804, 155.2856324255074, 153.3374049455322, 151.5213754295871, 150.47317456434612, 150.29768865109034, 149.05743960567554, 147.29061306588838, 146.03659230801165, 144.57197609073214, 143.67893261186597, 143.07941154264782, 141.85396254844807, 140.9469562628228, 140.54885426756087, 139.4287948785326, 137.93020691310326, 138.16155742222227, 137.29890935717896, 135.81976297188277, 134.2668042021412, 132.94369889228585, 131.88883293396412, 131.10193253231392, 129.94445789396303, 127.68253223485401, 126.48620905975997, 125.62531876667313, 124.1198777743186, 123.46962400128504, 122.67656321245212, 121.43545084363016, 119.78436652934406], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:55.299895+00:00", "change_24h": -5.3, "quote_volume": 71428571.42857143}, {"symbol": "INJ/USDT", "base": "INJ", "bucket": "small", "mode": "swing", "direction": "long", "action": "watch", "score": 49.9, "confidence": "low", "regime": "mixed", "price": 2644.4202243410755, "entry": 2644.4202243410755, "stop": 2604.373969995444, "targets": [2648.695841851274, 2764.55898737797], "rr": 3.0, "atr": 25.02890896601954, "atr_pct": 0.946, "risk_pct_move": 1.514, "position_size_units": 0.09453868099284177, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 2604.37 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 1.6, "contribution": 1.6, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.3, "contribution": 1.3, "note": "supertrend long @ 2576.57"}, {"name": "VWAP", "score": 1.0, "weight": 1.1, "contribution": 1.1, "note": "+3.22% vs rolling VWAP \u2014 buyers in control"}, {"name": "Price vs EMA200", "score": 1.0, "weight": 1.0, "contribution": 1.0, "note": "+7.90% above the 200 EMA"}, {"name": "StochRSI", "score": -0.85, "weight": 0.85, "contribution": -0.722, "note": "StochRSI bear cross from overbought (K 96)"}, {"name": "OBV", "score": 0.782, "weight": 0.9, "contribution": 0.704, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "Bollinger %B", "score": 0.669, "weight": 0.9, "contribution": 0.602, "note": "%B 0.89 \u2014 inside the bands"}, {"name": "MACD", "score": 0.457, "weight": 1.3, "contribution": 0.594, "note": "histogram +8.04938, contracting; line above signal"}, {"name": "RSI", "score": 0.486, "weight": 1.2, "contribution": 0.583, "note": "RSI 60.7 \u2014 momentum confirms trend"}, {"name": "Market structure", "score": 0.4, "weight": 1.4, "contribution": 0.56, "note": "partial bullish structure"}, {"name": "MFI", "score": 0.57, "weight": 0.8, "contribution": 0.456, "note": "MFI 64.2"}, {"name": "Candle close", "score": -0.068, "weight": 0.6, "contribution": -0.041, "note": "closing in the lower 8% of the bar range"}, {"name": "Volume", "score": -0.0, "weight": 1.1, "contribution": -0.0, "note": "volume -0.3\u03c3 \u2014 average participation"}], "confirm": {"timeframe": "1d", "score": 76.2, "label": "bullish", "notes": ["EMA21 > EMA50", "price +59.1% vs EMA200", "supertrend up", "MACD hist negative", "RSI 72", "higher highs + higher lows"], "rsi": 71.9, "adx": 53.7}, "bias": {"timeframe": "1d", "score": 76.2, "label": "bullish", "notes": ["EMA21 > EMA50", "price +59.1% vs EMA200", "supertrend up", "MACD hist negative", "RSI 72", "higher highs + higher lows"], "rsi": 71.9, "adx": 53.7}, "news": {}, "warnings": ["ADX 19 below 20 \u2014 choppy, low follow-through"], "levels": {"support": [2613.689117351894, 2578.230645349349, 2565.8452511283654, 2550.9392035498995], "resistance": [2648.695841851274], "adx": 19.3, "bb_width_pct": 65.6, "squeeze": false}, "spark": [2562.9198073132784, 2573.206289674148, 2567.608625382531, 2529.525266168823, 2539.327538875117, 2546.687852027462, 2552.981609283574, 2556.5264243339616, 2556.82075724173, 2542.240985295261, 2577.8445318876406, 2582.129075816233, 2614.7554140859834, 2604.7481980943485, 2603.2487613758017, 2605.9458938060366, 2602.0166552566016, 2592.85026937311, 2580.0119608334817, 2583.6676537228113, 2603.484383537887, 2599.8466002713512, 2601.5696802060206, 2637.281386109933, 2630.42328021271, 2633.371572184515, 2637.1862602097963, 2639.659292040147, 2623.8851043990503, 2645.7158982781693, 2631.6072224607756, 2624.931647005436, 2639.72125037333, 2633.871211743701, 2626.2601020103803, 2608.831308476623, 2606.9473880859355, 2573.4802651695186, 2559.176689172742, 2572.848038087974, 2581.3828614020736, 2603.9673773335476, 2579.74279227679, 2575.726235634445, 2578.4675866115304, 2593.1807856936302, 2606.3485868341963, 2596.1076861007828, 2561.5752052224066, 2558.6119812856064, 2580.1937303233485, 2594.954110332494, 2570.82336844066, 2582.127395854796, 2609.9117156686657, 2620.494129115821, 2646.051591510606, 2647.9653487881174, 2653.2472742631744, 2644.4202243410755], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:54.366680+00:00", "change_24h": 2.41, "quote_volume": 125000000.0}, {"symbol": "SEI/USDT", "base": "SEI", "bucket": "small", "mode": "swing", "direction": "short", "action": "watch", "score": -37.1, "confidence": "none", "regime": "compression", "price": 75.92495348911358, "entry": 75.92495348911358, "stop": 76.87459023913419, "targets": [74.50049836408266, 73.07604323905173], "rr": 3.0, "atr": 0.5935229687628838, "atr_pct": 0.782, "risk_pct_move": 1.251, "position_size_units": 3.2927250990788686, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 76.8746 on the 4h, or a 1d flip against the position", "votes": [{"name": "Market structure", "score": -1.0, "weight": 1.4, "contribution": -1.4, "note": "lower highs + lower lows"}, {"name": "EMA stack", "score": -1.0, "weight": 1.28, "contribution": -1.28, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.04, "contribution": -1.04, "note": "supertrend short @ 78.1476 (just flipped)"}, {"name": "VWAP", "score": -1.0, "weight": 0.88, "contribution": -0.88, "note": "-2.76% vs rolling VWAP \u2014 sellers in control"}, {"name": "Bollinger %B", "score": 1.0, "weight": 0.84, "contribution": 0.84, "note": "%B -0.10 \u2014 fading band edge"}, {"name": "Price vs EMA200", "score": -1.0, "weight": 0.8, "contribution": -0.8, "note": "-5.39% below the 200 EMA"}, {"name": "Volume", "score": -0.406, "weight": 1.38, "contribution": -0.558, "note": "volume +1.0\u03c3 \u2014 average participation"}, {"name": "OBV", "score": -0.439, "weight": 1.12, "contribution": -0.494, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "MFI", "score": 0.486, "weight": 1.0, "contribution": 0.486, "note": "MFI 36.4"}, {"name": "Candle close", "score": -0.747, "weight": 0.6, "contribution": -0.448, "note": "closing in the lower 93% of the bar range"}, {"name": "RSI", "score": 0.434, "weight": 0.98, "contribution": 0.425, "note": "RSI 39.1 \u2014 mean-reversion read in a compression market"}, {"name": "MACD", "score": -0.182, "weight": 1.04, "contribution": -0.189, "note": "histogram -0.048081, contracting; line below signal"}, {"name": "StochRSI", "score": 0.0, "weight": 0.7, "contribution": 0.0, "note": "StochRSI K 25 / D 37"}], "confirm": {"timeframe": "1d", "score": -84.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -28.0% vs EMA200", "supertrend down", "MACD hist negative", "RSI 30", "lower highs + lower lows"], "rsi": 29.9, "adx": 43.0}, "bias": {"timeframe": "1d", "score": -84.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -28.0% vs EMA200", "supertrend down", "MACD hist negative", "RSI 30", "lower highs + lower lows"], "rsi": 29.9, "adx": 43.0}, "news": {}, "warnings": ["ADX 11 below 20 \u2014 choppy, low follow-through", "volatility compression \u2014 breakout pending, direction unproven"], "levels": {"support": [], "resistance": [77.723492441482, 78.01853619903129, 78.0887253470499, 78.47995635665677], "adx": 11.1, "bb_width_pct": 9.2, "squeeze": true}, "spark": [78.36256212520072, 78.36421490832014, 78.38074267157867, 77.83330430020911, 77.98180165129679, 78.1445459027072, 78.30122927773088, 78.10438725213925, 77.96874477549412, 77.92525012847292, 78.1615803585711, 78.41140479558403, 78.1117201113614, 77.50562062080051, 77.14915275464465, 77.60856001176091, 77.49061704357189, 77.3910091547284, 77.27211170035592, 77.27465470786615, 77.24624784662535, 77.17409357206188, 77.22913773775926, 77.9369628227561, 77.32893371956179, 77.09399739571947, 76.54429813616765, 76.77773974827585, 76.77325465374626, 76.75196047193806, 77.0554337398014, 76.82058638603374, 76.48994504582738, 76.40714548376745, 77.32701137059999, 77.30297452958312, 77.952067518925, 77.31662424596068, 77.08895856226381, 76.95709387464115, 76.7723191458369, 76.67446220058636, 76.54162910468455, 76.66826745348823, 76.85202759020326, 76.88832296981049, 77.18562408416994, 77.28944431062507, 77.22456867668417, 76.72760799643405, 76.76385236220902, 77.54781930839499, 76.73355722071229, 76.67171411353141, 76.29742452432643, 76.44230489051405, 77.05840565693127, 76.64018391268289, 76.70022067125822, 75.92495348911358], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:55.278558+00:00", "change_24h": -0.97, "quote_volume": 100000000.0}, {"symbol": "BTC/USDT", "base": "BTC", "bucket": "large", "mode": "swing", "direction": "long", "action": "none", "score": 30.2, "confidence": "none", "regime": "mixed", "price": 682.0173572970336, "entry": 682.0173572970336, "stop": 674.2035072194616, "targets": [682.6360829776238, 705.4589075297498], "rr": 3.0, "atr": 3.8269598931446147, "atr_pct": 0.561, "risk_pct_move": 1.146, "position_size_units": 0.36655958580115655, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 674.204 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 1.6, "contribution": 1.6, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Market structure", "score": -1.0, "weight": 1.4, "contribution": -1.4, "note": "lower highs + lower lows"}, {"name": "Supertrend", "score": 1.0, "weight": 1.3, "contribution": 1.3, "note": "supertrend long @ 673.013"}, {"name": "VWAP", "score": 1.0, "weight": 1.1, "contribution": 1.1, "note": "+2.24% vs rolling VWAP \u2014 buyers in control"}, {"name": "OBV", "score": 1.0, "weight": 0.9, "contribution": 0.9, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "Price vs EMA200", "score": 0.897, "weight": 1.0, "contribution": 0.897, "note": "+3.59% above the 200 EMA"}, {"name": "StochRSI", "score": -0.85, "weight": 0.85, "contribution": -0.722, "note": "StochRSI bear cross from overbought (K 57)"}, {"name": "Volume", "score": 0.647, "weight": 1.1, "contribution": 0.711, "note": "volume +1.6\u03c3 \u2014 buying conviction"}, {"name": "RSI", "score": 0.362, "weight": 1.2, "contribution": 0.435, "note": "RSI 58.0 \u2014 momentum confirms trend"}, {"name": "MFI", "score": -0.247, "weight": 0.8, "contribution": -0.197, "note": "MFI 43.8"}, {"name": "Bollinger %B", "score": 0.149, "weight": 0.9, "contribution": 0.134, "note": "%B 0.59 \u2014 inside the bands"}, {"name": "MACD", "score": -0.06, "weight": 1.3, "contribution": -0.078, "note": "histogram -0.272215, expanding; line below signal"}, {"name": "Candle close", "score": 0.003, "weight": 0.6, "contribution": 0.002, "note": "closing in the upper 0% of the bar range"}], "confirm": {"timeframe": "1d", "score": 83.5, "label": "bullish", "notes": ["EMA21 > EMA50", "price +27.6% vs EMA200", "supertrend up", "MACD hist positive", "RSI 66", "higher highs + higher lows"], "rsi": 66.5, "adx": 36.0}, "bias": {"timeframe": "1d", "score": 83.5, "label": "bullish", "notes": ["EMA21 > EMA50", "price +27.6% vs EMA200", "supertrend up", "MACD hist positive", "RSI 66", "higher highs + higher lows"], "rsi": 66.5, "adx": 36.0}, "news": {}, "warnings": ["ADX 20 below 20 \u2014 choppy, low follow-through"], "levels": {"support": [675.1602471927478, 673.324118605926, 664.9964170084004, 664.087510102259], "resistance": [682.6360829776238, 686.657596132713], "adx": 20.0, "bb_width_pct": 28.3, "squeeze": false}, "spark": [659.623495683344, 665.3914888647938, 668.0776382266968, 666.9478650762185, 668.1920580355159, 666.8844847512473, 669.4439365208998, 673.0065553896017, 670.9438081705676, 670.9807117052438, 668.1352175266713, 668.8243402757591, 665.8838451849707, 667.5144729624599, 665.5304726910905, 667.7328081033402, 667.6388764363538, 664.6247638760483, 667.5053950289337, 666.4298282393015, 669.2452432751761, 667.1513078006809, 664.7116437712218, 661.8908542322479, 664.6100840076106, 663.1113365943686, 664.7240543996566, 661.8304491783578, 663.1196775106861, 664.6059337003364, 662.4980288741813, 658.624493875209, 661.2611209531497, 665.2298583921703, 666.7742293733854, 669.5688910878687, 675.0656884612096, 675.3891702649195, 679.9481429368517, 682.5724595087346, 683.9690366307271, 682.97552685886, 683.3319116250182, 684.6393703254508, 682.6254957985689, 683.1067726226516, 681.6405646821499, 678.8214057891764, 680.1963748636424, 681.3181620263769, 679.124275783194, 679.0480758608181, 675.7320873187082, 675.5761904921544, 678.2109281176247, 680.9022962385269, 683.8233836468255, 684.2534891225068, 680.7679730956914, 682.0173572970336], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:54.463972+00:00", "change_24h": 0.95, "quote_volume": 500000000.0}, {"symbol": "ETH/USDT", "base": "ETH", "bucket": "large", "mode": "swing", "direction": "short", "action": "none", "score": -28.6, "confidence": "none", "regime": "trending", "price": 31.46424302120092, "entry": 31.46424302120092, "stop": 31.78796856757048, "targets": [31.297539459126845, 30.493066382092245], "rr": 3.0, "atr": 0.20232846648097488, "atr_pct": 0.643, "risk_pct_move": 1.029, "position_size_units": 7.945527239652565, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 31.788 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": -1.0, "weight": 2.0, "contribution": -2.0, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.62, "contribution": 1.625, "note": "supertrend long @ 30.9018"}, {"name": "Market structure", "score": -1.0, "weight": 1.61, "contribution": -1.61, "note": "lower highs + lower lows"}, {"name": "VWAP", "score": -1.0, "weight": 1.38, "contribution": -1.375, "note": "-3.66% vs rolling VWAP \u2014 sellers in control"}, {"name": "Price vs EMA200", "score": -1.0, "weight": 1.25, "contribution": -1.25, "note": "-7.31% below the 200 EMA"}, {"name": "MACD", "score": 0.376, "weight": 1.62, "contribution": 0.612, "note": "histogram +0.0789638, contracting; line above signal"}, {"name": "OBV", "score": 0.481, "weight": 0.9, "contribution": 0.433, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "StochRSI", "score": -0.85, "weight": 0.45, "contribution": -0.383, "note": "StochRSI bear cross from overbought (K 95)"}, {"name": "Bollinger %B", "score": 0.334, "weight": 1.12, "contribution": 0.375, "note": "%B 0.70 \u2014 inside the bands"}, {"name": "Candle close", "score": -0.373, "weight": 0.6, "contribution": -0.224, "note": "closing in the lower 47% of the bar range"}, {"name": "RSI", "score": 0.009, "weight": 1.5, "contribution": 0.014, "note": "RSI 50.2 \u2014 momentum confirms trend"}, {"name": "MFI", "score": 0.008, "weight": 0.8, "contribution": 0.006, "note": "MFI 50.2"}, {"name": "Volume", "score": -0.0, "weight": 1.1, "contribution": -0.0, "note": "volume -0.2\u03c3 \u2014 average participation"}], "confirm": {"timeframe": "1d", "score": -88.1, "label": "bearish", "notes": ["EMA21 < EMA50", "price -42.3% vs EMA200", "supertrend down", "MACD hist negative", "RSI 21", "lower highs + lower lows"], "rsi": 21.2, "adx": 75.7}, "bias": {"timeframe": "1d", "score": -88.1, "label": "bearish", "notes": ["EMA21 < EMA50", "price -42.3% vs EMA200", "supertrend down", "MACD hist negative", "RSI 21", "lower highs + lower lows"], "rsi": 21.2, "adx": 75.7}, "news": {}, "warnings": [], "levels": {"support": [31.297539459126845, 30.819468352459317], "resistance": [31.593196318557773, 31.759971480677937, 31.855285375792132, 32.77384794162748], "adx": 31.5, "bb_width_pct": 49.1, "squeeze": false}, "spark": [33.128345755203135, 32.857834783520865, 32.87059544388905, 32.82950037568642, 32.781759388392025, 32.8645471792881, 32.71698415153706, 32.94905637182852, 32.840719015262614, 32.79533239886773, 32.71258431325895, 32.57677264829368, 32.719651306822094, 32.6391602554961, 32.58659895301682, 32.70225618573342, 32.664072289989605, 32.44234170762217, 32.35980566480382, 31.97294618923168, 31.95151270973685, 31.985486429035404, 31.902015317729084, 31.886263875831595, 31.910519853280842, 31.79782315163411, 31.713695837172757, 31.539276526194058, 31.5990891357114, 31.647874756929852, 31.680826486139026, 31.61090330229952, 31.61777321880469, 31.581350696093118, 31.657816725504432, 31.84440590122585, 31.594550503914615, 31.557102147241167, 31.660536228686077, 31.601679013326528, 31.51754455644643, 31.320220128872375, 31.44500873937559, 31.524870546068477, 31.48418488293499, 31.33115916749952, 31.173560810821535, 31.234219329969044, 30.978996140443044, 30.869264959581542, 30.93378319432723, 30.98548294833734, 31.141221963261426, 31.358713061152216, 31.3896841494831, 31.395639291924294, 31.336458903545772, 31.49288320800396, 31.59117284409238, 31.46424302120092], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:54.256952+00:00", "change_24h": 0.34, "quote_volume": 250000000.0}, {"symbol": "SOL/USDT", "base": "SOL", "bucket": "large", "mode": "swing", "direction": "flat", "action": "none", "score": 12.1, "confidence": "none", "regime": "trending", "price": 217.05526839282308, "entry": 217.05526839282308, "stop": 216.17627056548315, "targets": [215.73677165181317, 214.4182749108033], "rr": 3.0, "atr": 0.5493736420874618, "atr_pct": 0.253, "risk_pct_move": 0.405, "position_size_units": 1.1517803822552424, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 216.176 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 2.0, "contribution": 2.0, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.62, "contribution": 1.625, "note": "supertrend long @ 215.396"}, {"name": "RSI", "score": 0.668, "weight": 1.5, "contribution": 1.003, "note": "RSI 64.7 \u2014 momentum confirms trend"}, {"name": "MFI", "score": 1.0, "weight": 0.8, "contribution": 0.8, "note": "MFI 78.9"}, {"name": "OBV", "score": 0.771, "weight": 0.9, "contribution": 0.694, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "Bollinger %B", "score": 0.578, "weight": 1.12, "contribution": 0.65, "note": "%B 0.84 \u2014 inside the bands"}, {"name": "Market structure", "score": 0.4, "weight": 1.61, "contribution": 0.644, "note": "partial bullish structure"}, {"name": "Volume", "score": 0.317, "weight": 1.1, "contribution": 0.349, "note": "volume +0.8\u03c3 \u2014 average participation"}, {"name": "VWAP", "score": 0.199, "weight": 1.38, "contribution": 0.273, "note": "+0.30% vs rolling VWAP \u2014 buyers in control"}, {"name": "MACD", "score": 0.106, "weight": 1.62, "contribution": 0.172, "note": "histogram +0.152736, contracting; line above signal"}, {"name": "StochRSI", "score": -0.35, "weight": 0.45, "contribution": -0.158, "note": "StochRSI pinned overbought (96)"}, {"name": "Candle close", "score": 0.062, "weight": 0.6, "contribution": 0.037, "note": "closing in the upper 8% of the bar range"}, {"name": "Price vs EMA200", "score": 0.03, "weight": 1.25, "contribution": 0.037, "note": "+0.12% above the 200 EMA"}], "confirm": {"timeframe": "1d", "score": -59.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -1.6% vs EMA200", "supertrend down", "MACD hist positive", "RSI 53", "lower highs + lower lows"], "rsi": 53.5, "adx": 16.6}, "bias": {"timeframe": "1d", "score": -59.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -1.6% vs EMA200", "supertrend down", "MACD hist positive", "RSI 53", "lower highs + lower lows"], "rsi": 53.5, "adx": 16.6}, "news": {}, "warnings": ["1d disagrees with the entry timeframe", "counter-trend to the 1d bias (bearish) \u2014 size down or skip", "ATR only 0.25% of price \u2014 too quiet to pay fees"], "levels": {"support": [216.95302406568817, 216.8481431634623, 216.82657010518233, 216.77317924272393], "resistance": [217.2346882084731, 217.98373180899569, 218.02382448050545, 218.0778598191141], "adx": 30.8, "bb_width_pct": 87.7, "squeeze": false}, "spark": [217.1901811688956, 217.15218394344942, 217.59691627395193, 217.53328537915425, 217.8869057858194, 217.2816330668667, 217.13058009025568, 217.63925397809447, 218.00734700284616, 217.66350979939764, 217.47211110088074, 217.2280785924931, 216.9895941161066, 217.17226421590533, 217.1410231336156, 217.09107130881875, 216.52493177858628, 216.600364822687, 216.55397272045332, 216.31180776265384, 216.1999272074795, 216.10523478129846, 216.47194578838784, 216.2808268221521, 215.6391204958777, 215.2511780081532, 215.2958901722024, 215.25770745056963, 215.21712592781964, 215.15553369039876, 214.5419766159406, 214.8651968533236, 214.67042939841457, 214.5630331666859, 214.94467193208638, 214.74074108320377, 214.55460274350062, 214.47973757417054, 214.659527606891, 214.92117324676656, 214.72013654680373, 214.7539837726418, 215.1343881709541, 214.95359955297747, 215.11209144245822, 215.38503055675685, 215.90390879105996, 215.5629516206966, 215.84064647896494, 215.42882696575637, 216.1066140285823, 216.5054199142953, 216.81998140561763, 216.26317459065743, 216.60472824754171, 216.70574864333244, 216.7069024277562, 217.05252000978882, 217.04482954940653, 217.05526839282308], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:54.532376+00:00", "change_24h": 0.37, "quote_volume": 166666666.66666666}]}, "counts": {"symbols": 7, "signals": 14, "enter": 2, "watch": 4, "long": 1, "short": 1}, "top_signals": [{"symbol": "PUMP/USDT", "base": "PUMP", "bucket": "small", "mode": "swing", "direction": "long", "action": "enter", "score": 75.5, "confidence": "high", "regime": "trending", "price": 1037.0830123126648, "entry": 1037.0830123126648, "stop": 1019.6605833590571, "targets": [1063.2166557430762, 1089.3502991734877], "rr": 3.0, "atr": 10.889018096004818, "atr_pct": 1.05, "risk_pct_move": 1.68, "position_size_units": 0.24106074155289392, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 1019.66 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 2.0, "contribution": 2.0, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.62, "contribution": 1.625, "note": "supertrend long @ 997.709"}, {"name": "VWAP", "score": 1.0, "weight": 1.38, "contribution": 1.375, "note": "+58.96% vs rolling VWAP \u2014 buyers in control"}, {"name": "Price vs EMA200", "score": 1.0, "weight": 1.25, "contribution": 1.25, "note": "+86.29% above the 200 EMA"}, {"name": "OBV", "score": 1.0, "weight": 0.9, "contribution": 0.9, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "RSI", "score": 0.55, "weight": 1.5, "contribution": 0.825, "note": "RSI 100.0 \u2014 strong but overbought, chase risk"}, {"name": "Bollinger %B", "score": 0.696, "weight": 1.12, "contribution": 0.783, "note": "%B 0.91 \u2014 inside the bands"}, {"name": "Candle close", "score": 0.777, "weight": 0.6, "contribution": 0.466, "note": "closing in the upper 97% of the bar range"}, {"name": "MACD", "score": 0.245, "weight": 1.62, "contribution": 0.398, "note": "histogram +1.69517, contracting; line above signal"}, {"name": "StochRSI", "score": -0.35, "weight": 0.45, "contribution": -0.158, "note": "StochRSI pinned overbought (100)"}, {"name": "Volume", "score": 0.0, "weight": 1.1, "contribution": 0.0, "note": "volume -0.6\u03c3 \u2014 average participation"}, {"name": "Market structure", "score": 0.0, "weight": 1.61, "contribution": 0.0, "note": "no clear structure"}], "confirm": {"timeframe": "1d", "score": 89.7, "label": "bullish", "notes": ["EMA21 > EMA50", "price +187.5% vs EMA200", "supertrend up", "MACD hist positive", "RSI 99", "partial bullish structure"], "rsi": 99.2, "adx": 74.1}, "bias": {"timeframe": "1d", "score": 89.7, "label": "bullish", "notes": ["EMA21 > EMA50", "price +187.5% vs EMA200", "supertrend up", "MACD hist positive", "RSI 99", "partial bullish structure"], "rsi": 99.2, "adx": 74.1}, "news": {}, "warnings": [], "levels": {"support": [], "resistance": [], "adx": 100.0, "bb_width_pct": 89.5, "squeeze": false}, "spark": [553.753931105676, 558.0683710970274, 565.0366040714005, 571.0376750143607, 575.7870016158021, 584.520152118565, 594.7100796092882, 600.4168309648911, 605.8678888825274, 607.8073153573246, 611.5296129380756, 619.2390425395843, 626.5808868525486, 634.8596506730418, 641.1576791601175, 647.5433225640231, 651.82566567799, 662.1593375078677, 668.6812493438671, 674.3379169101443, 682.7427029150608, 688.1286464838753, 693.0968094570399, 699.5517153885248, 704.6339135710783, 706.3570755558248, 716.3817736156442, 724.5869248799579, 736.2937923575173, 740.713161154536, 753.1860379514263, 761.4463365442588, 772.3557592031374, 775.1732357387797, 792.598877769129, 802.4798506060703, 807.6904757813692, 817.9864583709149, 829.5307762870813, 835.5592612931861, 845.28957352508, 854.1858565233928, 862.2779870884356, 876.2353696740645, 886.0380152602094, 897.8847588029331, 905.1556287095136, 918.6260426952826, 928.5377641605182, 941.6373663004806, 955.9168082706094, 960.2979438443543, 965.0417817898974, 979.0189472946879, 984.2494211241655, 995.1554653168346, 1004.8158695332252, 1016.0198009350526, 1026.2461326573105, 1037.0830123126648], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:55.269541+00:00", "change_24h": 5.93, "quote_volume": 83333333.33333333}, {"symbol": "DUMP/USDT", "base": "DUMP", "bucket": "small", "mode": "swing", "direction": "short", "action": "enter", "score": -73.2, "confidence": "moderate", "regime": "trending", "price": 119.78436652934406, "entry": 119.78436652934406, "stop": 122.08325396990962, "targets": [116.33603536849571, 112.88770420764736], "rr": 3.0, "atr": 1.4368046503534757, "atr_pct": 1.199, "risk_pct_move": 1.919, "position_size_units": 2.087083709198032, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 122.083 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": -1.0, "weight": 2.0, "contribution": -2.0, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.62, "contribution": -1.625, "note": "supertrend short @ 124.805"}, {"name": "VWAP", "score": -1.0, "weight": 1.38, "contribution": -1.375, "note": "-34.83% vs rolling VWAP \u2014 sellers in control"}, {"name": "Price vs EMA200", "score": -1.0, "weight": 1.25, "contribution": -1.25, "note": "-47.60% below the 200 EMA"}, {"name": "OBV", "score": -1.0, "weight": 0.9, "contribution": -0.9, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "RSI", "score": -0.55, "weight": 1.5, "contribution": -0.825, "note": "RSI 0.5 \u2014 weak but oversold, bounce risk"}, {"name": "Bollinger %B", "score": -0.719, "weight": 1.12, "contribution": -0.809, "note": "%B 0.08 \u2014 inside the bands"}, {"name": "MFI", "score": -1.0, "weight": 0.8, "contribution": -0.8, "note": "MFI 0.0"}, {"name": "Candle close", "score": -0.734, "weight": 0.6, "contribution": -0.44, "note": "closing in the lower 92% of the bar range"}, {"name": "MACD", "score": 0.126, "weight": 1.62, "contribution": 0.205, "note": "histogram +0.100639, contracting; line above signal"}, {"name": "StochRSI", "score": 0.35, "weight": 0.45, "contribution": 0.158, "note": "StochRSI pinned oversold (0)"}, {"name": "Volume", "score": -0.002, "weight": 1.1, "contribution": -0.002, "note": "volume +0.0\u03c3 \u2014 average participation"}, {"name": "Market structure", "score": 0.0, "weight": 1.61, "contribution": 0.0, "note": "no clear structure"}], "confirm": {"timeframe": "1d", "score": -76.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -61.9% vs EMA200", "supertrend down", "MACD hist negative", "RSI 5", "partial bullish structure"], "rsi": 5.3, "adx": 65.7}, "bias": {"timeframe": "1d", "score": -76.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -61.9% vs EMA200", "supertrend down", "MACD hist negative", "RSI 5", "partial bullish structure"], "rsi": 5.3, "adx": 65.7}, "news": {}, "warnings": [], "levels": {"support": [], "resistance": [], "adx": 99.9, "bb_width_pct": 91.6, "squeeze": false}, "spark": [195.45280233934855, 194.6893050292549, 193.35079035960345, 192.0025579378669, 190.9692352189252, 189.27493203885427, 188.52155088208593, 188.7591054733659, 187.75460216076107, 184.5298414030543, 181.80283910452772, 180.37932114777718, 178.6982985176262, 177.60427836401905, 176.20700974902672, 174.7537277451534, 172.21534969307268, 170.0320098413474, 167.70927802594852, 166.67854869654278, 165.7433944311538, 163.5777014185143, 162.46627366690507, 161.6322016331693, 160.6252708359907, 158.92272310965163, 157.41219045505974, 156.39187309220804, 155.2856324255074, 153.3374049455322, 151.5213754295871, 150.47317456434612, 150.29768865109034, 149.05743960567554, 147.29061306588838, 146.03659230801165, 144.57197609073214, 143.67893261186597, 143.07941154264782, 141.85396254844807, 140.9469562628228, 140.54885426756087, 139.4287948785326, 137.93020691310326, 138.16155742222227, 137.29890935717896, 135.81976297188277, 134.2668042021412, 132.94369889228585, 131.88883293396412, 131.10193253231392, 129.94445789396303, 127.68253223485401, 126.48620905975997, 125.62531876667313, 124.1198777743186, 123.46962400128504, 122.67656321245212, 121.43545084363016, 119.78436652934406], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:55.299895+00:00", "change_24h": -5.3, "quote_volume": 71428571.42857143}, {"symbol": "DUMP/USDT", "base": "DUMP", "bucket": "small", "mode": "scalp", "direction": "short", "action": "watch", "score": -51.7, "confidence": "low", "regime": "trending", "price": 119.78436652934406, "entry": 119.78436652934406, "stop": 119.91564546353314, "targets": [119.65308759515497, 119.52180866096589], "rr": 2.0, "atr": 0.10939911182423098, "atr_pct": 0.091, "risk_pct_move": 0.11, "position_size_units": 2.087083709198032, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 119.916 on the 5m, or a 15m flip against the position", "votes": [{"name": "EMA stack", "score": -1.0, "weight": 2.0, "contribution": -2.0, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.62, "contribution": -1.625, "note": "supertrend short @ 120.118"}, {"name": "Market structure", "score": -1.0, "weight": 1.61, "contribution": -1.61, "note": "lower highs + lower lows"}, {"name": "RSI", "score": -1.0, "weight": 1.5, "contribution": -1.5, "note": "RSI 24.1 \u2014 momentum confirms trend"}, {"name": "VWAP", "score": -0.818, "weight": 1.38, "contribution": -1.125, "note": "-1.23% vs rolling VWAP \u2014 sellers in control"}, {"name": "OBV", "score": -0.989, "weight": 0.9, "contribution": -0.89, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "Bollinger %B", "score": -0.7, "weight": 1.12, "contribution": -0.788, "note": "%B 0.09 \u2014 inside the bands"}, {"name": "Price vs EMA200", "score": -0.536, "weight": 1.25, "contribution": -0.67, "note": "-2.15% below the 200 EMA"}, {"name": "MFI", "score": -0.739, "weight": 0.8, "contribution": -0.591, "note": "MFI 31.5"}, {"name": "MACD", "score": -0.352, "weight": 1.62, "contribution": -0.571, "note": "histogram -0.000639069, contracting (fresh bear cross); line below signal"}, {"name": "StochRSI", "score": 0.0, "weight": 0.45, "contribution": 0.0, "note": "StochRSI K 51 / D 63"}, {"name": "Volume", "score": -0.0, "weight": 1.1, "contribution": -0.0, "note": "volume -0.5\u03c3 \u2014 average participation"}, {"name": "Candle close", "score": 0.0, "weight": 0.6, "contribution": 0.0, "note": "closing in the upper 0% of the bar range"}], "confirm": {"timeframe": "15m", "score": -86.1, "label": "bearish", "notes": ["EMA21 < EMA50", "price -5.7% vs EMA200", "supertrend down", "MACD hist negative", "RSI 15", "lower highs + lower lows"], "rsi": 14.7, "adx": 84.6}, "bias": {"timeframe": "1h", "score": -69.1, "label": "bearish", "notes": ["EMA21 < EMA50", "price -20.4% vs EMA200", "supertrend down", "MACD hist negative", "RSI 3", "no clear structure"], "rsi": 2.9, "adx": 95.8}, "news": {}, "warnings": ["ATR only 0.09% of price \u2014 too quiet to pay fees"], "levels": {"support": [], "resistance": [120.10375884965063, 120.61738130547488, 120.72203692411617, 121.09068708830026], "adx": 59.8, "bb_width_pct": 72.2, "squeeze": false}, "spark": [121.73761291868054, 121.71331309801364, 121.69158849391256, 121.62748196212151, 121.58156905400345, 121.5646115024517, 121.55312551585592, 121.46164699033633, 121.44220182546265, 121.47799041084808, 121.47370346634703, 121.43545084363016, 121.34973839523435, 121.3356204945461, 121.18409656741912, 121.17326876682895, 121.16365841987285, 121.08330695283364, 120.95076451869554, 120.9345550785354, 120.90683233730176, 121.06839616991603, 121.01785048045221, 120.90910676340553, 120.72603151206194, 120.76996056065036, 120.78197497018179, 120.63556286094212, 120.6013295988605, 120.63158301106917, 120.66127834668315, 120.67866067361427, 120.7117488037351, 120.59017237774964, 120.54179305359254, 120.56934871320583, 120.54157065234607, 120.58370437490083, 120.46969537857609, 120.44153790897171, 120.37340202436198, 120.41662353368099, 120.41314450846109, 120.36883197010923, 120.39674804905998, 120.25445350371949, 120.30268808228071, 120.20448670957391, 120.15959632156687, 119.99394489751039, 119.91358810225933, 119.96363752114551, 119.95006138851764, 120.10048901139044, 120.04216934202853, 120.05645223943117, 119.95667836946441, 119.89487714535045, 119.84107104792287, 119.78436652934406], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:55.020113+00:00", "change_24h": -5.3, "quote_volume": 71428571.42857143}, {"symbol": "INJ/USDT", "base": "INJ", "bucket": "small", "mode": "swing", "direction": "long", "action": "watch", "score": 49.9, "confidence": "low", "regime": "mixed", "price": 2644.4202243410755, "entry": 2644.4202243410755, "stop": 2604.373969995444, "targets": [2648.695841851274, 2764.55898737797], "rr": 3.0, "atr": 25.02890896601954, "atr_pct": 0.946, "risk_pct_move": 1.514, "position_size_units": 0.09453868099284177, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 2604.37 on the 4h, or a 1d flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 1.6, "contribution": 1.6, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.3, "contribution": 1.3, "note": "supertrend long @ 2576.57"}, {"name": "VWAP", "score": 1.0, "weight": 1.1, "contribution": 1.1, "note": "+3.22% vs rolling VWAP \u2014 buyers in control"}, {"name": "Price vs EMA200", "score": 1.0, "weight": 1.0, "contribution": 1.0, "note": "+7.90% above the 200 EMA"}, {"name": "StochRSI", "score": -0.85, "weight": 0.85, "contribution": -0.722, "note": "StochRSI bear cross from overbought (K 96)"}, {"name": "OBV", "score": 0.782, "weight": 0.9, "contribution": 0.704, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "Bollinger %B", "score": 0.669, "weight": 0.9, "contribution": 0.602, "note": "%B 0.89 \u2014 inside the bands"}, {"name": "MACD", "score": 0.457, "weight": 1.3, "contribution": 0.594, "note": "histogram +8.04938, contracting; line above signal"}, {"name": "RSI", "score": 0.486, "weight": 1.2, "contribution": 0.583, "note": "RSI 60.7 \u2014 momentum confirms trend"}, {"name": "Market structure", "score": 0.4, "weight": 1.4, "contribution": 0.56, "note": "partial bullish structure"}, {"name": "MFI", "score": 0.57, "weight": 0.8, "contribution": 0.456, "note": "MFI 64.2"}, {"name": "Candle close", "score": -0.068, "weight": 0.6, "contribution": -0.041, "note": "closing in the lower 8% of the bar range"}, {"name": "Volume", "score": -0.0, "weight": 1.1, "contribution": -0.0, "note": "volume -0.3\u03c3 \u2014 average participation"}], "confirm": {"timeframe": "1d", "score": 76.2, "label": "bullish", "notes": ["EMA21 > EMA50", "price +59.1% vs EMA200", "supertrend up", "MACD hist negative", "RSI 72", "higher highs + higher lows"], "rsi": 71.9, "adx": 53.7}, "bias": {"timeframe": "1d", "score": 76.2, "label": "bullish", "notes": ["EMA21 > EMA50", "price +59.1% vs EMA200", "supertrend up", "MACD hist negative", "RSI 72", "higher highs + higher lows"], "rsi": 71.9, "adx": 53.7}, "news": {}, "warnings": ["ADX 19 below 20 \u2014 choppy, low follow-through"], "levels": {"support": [2613.689117351894, 2578.230645349349, 2565.8452511283654, 2550.9392035498995], "resistance": [2648.695841851274], "adx": 19.3, "bb_width_pct": 65.6, "squeeze": false}, "spark": [2562.9198073132784, 2573.206289674148, 2567.608625382531, 2529.525266168823, 2539.327538875117, 2546.687852027462, 2552.981609283574, 2556.5264243339616, 2556.82075724173, 2542.240985295261, 2577.8445318876406, 2582.129075816233, 2614.7554140859834, 2604.7481980943485, 2603.2487613758017, 2605.9458938060366, 2602.0166552566016, 2592.85026937311, 2580.0119608334817, 2583.6676537228113, 2603.484383537887, 2599.8466002713512, 2601.5696802060206, 2637.281386109933, 2630.42328021271, 2633.371572184515, 2637.1862602097963, 2639.659292040147, 2623.8851043990503, 2645.7158982781693, 2631.6072224607756, 2624.931647005436, 2639.72125037333, 2633.871211743701, 2626.2601020103803, 2608.831308476623, 2606.9473880859355, 2573.4802651695186, 2559.176689172742, 2572.848038087974, 2581.3828614020736, 2603.9673773335476, 2579.74279227679, 2575.726235634445, 2578.4675866115304, 2593.1807856936302, 2606.3485868341963, 2596.1076861007828, 2561.5752052224066, 2558.6119812856064, 2580.1937303233485, 2594.954110332494, 2570.82336844066, 2582.127395854796, 2609.9117156686657, 2620.494129115821, 2646.051591510606, 2647.9653487881174, 2653.2472742631744, 2644.4202243410755], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:54.366680+00:00", "change_24h": 2.41, "quote_volume": 125000000.0}, {"symbol": "PUMP/USDT", "base": "PUMP", "bucket": "small", "mode": "scalp", "direction": "long", "action": "watch", "score": 46.3, "confidence": "low", "regime": "trending", "price": 1037.0830123126648, "entry": 1037.0830123126648, "stop": 1035.9109713907778, "targets": [1038.2550532345517, 1039.4270941564387], "rr": 2.0, "atr": 0.9767007682390594, "atr_pct": 0.094, "risk_pct_move": 0.113, "position_size_units": 0.24106074155289395, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~24 \u00d7 5m bars max", "max_hold_bars": 24, "invalidation": "close beyond 1035.91 on the 5m, or a 15m flip against the position", "votes": [{"name": "EMA stack", "score": 1.0, "weight": 2.0, "contribution": 2.0, "note": "EMA 9>21>50 \u2014 stacked bullish"}, {"name": "Supertrend", "score": 1.0, "weight": 1.62, "contribution": 1.625, "note": "supertrend long @ 1033.59"}, {"name": "Market structure", "score": 1.0, "weight": 1.61, "contribution": 1.61, "note": "higher highs + higher lows"}, {"name": "Bollinger %B", "score": 1.0, "weight": 1.12, "contribution": 1.125, "note": "%B 1.21 \u2014 riding above the upper band"}, {"name": "VWAP", "score": 0.751, "weight": 1.38, "contribution": 1.033, "note": "+1.13% vs rolling VWAP \u2014 buyers in control"}, {"name": "OBV", "score": 1.0, "weight": 0.9, "contribution": 0.9, "note": "OBV above its 21 EMA \u2014 accumulation"}, {"name": "RSI", "score": 0.55, "weight": 1.5, "contribution": 0.825, "note": "RSI 79.7 \u2014 strong but overbought, chase risk"}, {"name": "MFI", "score": 0.898, "weight": 0.8, "contribution": 0.719, "note": "MFI 72.5"}, {"name": "Price vs EMA200", "score": 0.535, "weight": 1.25, "contribution": 0.669, "note": "+2.14% above the 200 EMA"}, {"name": "RSI divergence", "score": -0.9, "weight": 0.54, "contribution": -0.486, "note": "bearish divergence \u2014 higher high in price, lower high in RSI (82\u219267)"}, {"name": "Candle close", "score": 0.592, "weight": 0.6, "contribution": 0.355, "note": "closing in the upper 74% of the bar range"}, {"name": "Volume", "score": 0.197, "weight": 1.1, "contribution": 0.217, "note": "volume +0.5\u03c3 \u2014 average participation"}, {"name": "StochRSI", "score": -0.35, "weight": 0.45, "contribution": -0.158, "note": "StochRSI pinned overbought (100)"}, {"name": "MACD", "score": 0.058, "weight": 1.62, "contribution": 0.094, "note": "histogram +0.207937, expanding; line above signal"}], "confirm": {"timeframe": "15m", "score": 85.9, "label": "bullish", "notes": ["EMA21 > EMA50", "price +6.3% vs EMA200", "supertrend up", "MACD hist positive", "RSI 87", "higher highs + higher lows"], "rsi": 87.4, "adx": 72.8}, "bias": {"timeframe": "1h", "score": 69.2, "label": "bullish", "notes": ["EMA21 > EMA50", "price +26.2% vs EMA200", "supertrend up", "MACD hist positive", "RSI 94", "no clear structure"], "rsi": 94.3, "adx": 97.8}, "news": {}, "warnings": ["ATR only 0.09% of price \u2014 too quiet to pay fees"], "levels": {"support": [1031.6185989013215, 1031.1907998824074, 1025.172498285974, 1019.3742608167385], "resistance": [], "adx": 38.7, "bb_width_pct": 48.6, "squeeze": false}, "spark": [1021.6155739430827, 1022.4445831410986, 1022.381178570837, 1022.7120231399832, 1023.6750411295588, 1024.3415321857462, 1023.5208071630319, 1024.0530966424487, 1025.5158981793954, 1026.0580197359552, 1027.021919651005, 1026.2461326573105, 1026.4396369496337, 1026.928927133077, 1026.7063924653544, 1026.3255619821064, 1026.7308981171793, 1027.0527652697338, 1026.6172291859464, 1025.993181085053, 1025.2484287038237, 1025.6522806086518, 1025.2312469724466, 1026.2871416109997, 1027.1244919413896, 1027.0166556221352, 1028.0300723324146, 1027.8775863719782, 1027.6014733724935, 1028.6528375838598, 1028.8719210069382, 1028.9810187531943, 1029.7348462994187, 1029.2785289276462, 1029.5049803118286, 1030.6461799117958, 1030.7609016751292, 1031.4937789557541, 1032.3369857689418, 1032.8374707027358, 1033.1899014317903, 1032.408922766205, 1031.6755428887052, 1032.3185862307269, 1032.397626391409, 1031.9993393237012, 1032.9756142389933, 1033.3933736316917, 1032.5683074629114, 1033.0534411468814, 1032.64670348101, 1032.5511493530691, 1032.2387043229862, 1032.5394222239393, 1032.974712860007, 1033.474667781592, 1034.3318607203792, 1035.26600595355, 1035.9404684439805, 1037.0830123126648], "timeframes": {"entry": "5m", "confirm": "15m", "bias": "1h"}, "generated_at": "2026-08-22T18:26:54.945329+00:00", "change_24h": 5.93, "quote_volume": 83333333.33333333}, {"symbol": "SEI/USDT", "base": "SEI", "bucket": "small", "mode": "swing", "direction": "short", "action": "watch", "score": -37.1, "confidence": "none", "regime": "compression", "price": 75.92495348911358, "entry": 75.92495348911358, "stop": 76.87459023913419, "targets": [74.50049836408266, 73.07604323905173], "rr": 3.0, "atr": 0.5935229687628838, "atr_pct": 0.782, "risk_pct_move": 1.251, "position_size_units": 3.2927250990788686, "position_notional": 250.0, "leverage_suggestion": 1.0, "hold_estimate": "~30 \u00d7 4h bars max", "max_hold_bars": 30, "invalidation": "close beyond 76.8746 on the 4h, or a 1d flip against the position", "votes": [{"name": "Market structure", "score": -1.0, "weight": 1.4, "contribution": -1.4, "note": "lower highs + lower lows"}, {"name": "EMA stack", "score": -1.0, "weight": 1.28, "contribution": -1.28, "note": "EMA 9<21<50 \u2014 stacked bearish"}, {"name": "Supertrend", "score": -1.0, "weight": 1.04, "contribution": -1.04, "note": "supertrend short @ 78.1476 (just flipped)"}, {"name": "VWAP", "score": -1.0, "weight": 0.88, "contribution": -0.88, "note": "-2.76% vs rolling VWAP \u2014 sellers in control"}, {"name": "Bollinger %B", "score": 1.0, "weight": 0.84, "contribution": 0.84, "note": "%B -0.10 \u2014 fading band edge"}, {"name": "Price vs EMA200", "score": -1.0, "weight": 0.8, "contribution": -0.8, "note": "-5.39% below the 200 EMA"}, {"name": "Volume", "score": -0.406, "weight": 1.38, "contribution": -0.558, "note": "volume +1.0\u03c3 \u2014 average participation"}, {"name": "OBV", "score": -0.439, "weight": 1.12, "contribution": -0.494, "note": "OBV below its 21 EMA \u2014 distribution"}, {"name": "MFI", "score": 0.486, "weight": 1.0, "contribution": 0.486, "note": "MFI 36.4"}, {"name": "Candle close", "score": -0.747, "weight": 0.6, "contribution": -0.448, "note": "closing in the lower 93% of the bar range"}, {"name": "RSI", "score": 0.434, "weight": 0.98, "contribution": 0.425, "note": "RSI 39.1 \u2014 mean-reversion read in a compression market"}, {"name": "MACD", "score": -0.182, "weight": 1.04, "contribution": -0.189, "note": "histogram -0.048081, contracting; line below signal"}, {"name": "StochRSI", "score": 0.0, "weight": 0.7, "contribution": 0.0, "note": "StochRSI K 25 / D 37"}], "confirm": {"timeframe": "1d", "score": -84.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -28.0% vs EMA200", "supertrend down", "MACD hist negative", "RSI 30", "lower highs + lower lows"], "rsi": 29.9, "adx": 43.0}, "bias": {"timeframe": "1d", "score": -84.0, "label": "bearish", "notes": ["EMA21 < EMA50", "price -28.0% vs EMA200", "supertrend down", "MACD hist negative", "RSI 30", "lower highs + lower lows"], "rsi": 29.9, "adx": 43.0}, "news": {}, "warnings": ["ADX 11 below 20 \u2014 choppy, low follow-through", "volatility compression \u2014 breakout pending, direction unproven"], "levels": {"support": [], "resistance": [77.723492441482, 78.01853619903129, 78.0887253470499, 78.47995635665677], "adx": 11.1, "bb_width_pct": 9.2, "squeeze": true}, "spark": [78.36256212520072, 78.36421490832014, 78.38074267157867, 77.83330430020911, 77.98180165129679, 78.1445459027072, 78.30122927773088, 78.10438725213925, 77.96874477549412, 77.92525012847292, 78.1615803585711, 78.41140479558403, 78.1117201113614, 77.50562062080051, 77.14915275464465, 77.60856001176091, 77.49061704357189, 77.3910091547284, 77.27211170035592, 77.27465470786615, 77.24624784662535, 77.17409357206188, 77.22913773775926, 77.9369628227561, 77.32893371956179, 77.09399739571947, 76.54429813616765, 76.77773974827585, 76.77325465374626, 76.75196047193806, 77.0554337398014, 76.82058638603374, 76.48994504582738, 76.40714548376745, 77.32701137059999, 77.30297452958312, 77.952067518925, 77.31662424596068, 77.08895856226381, 76.95709387464115, 76.7723191458369, 76.67446220058636, 76.54162910468455, 76.66826745348823, 76.85202759020326, 76.88832296981049, 77.18562408416994, 77.28944431062507, 77.22456867668417, 76.72760799643405, 76.76385236220902, 77.54781930839499, 76.73355722071229, 76.67171411353141, 76.29742452432643, 76.44230489051405, 77.05840565693127, 76.64018391268289, 76.70022067125822, 75.92495348911358], "timeframes": {"entry": "4h", "confirm": "1d", "bias": "1d"}, "generated_at": "2026-08-22T18:26:55.278558+00:00", "change_24h": -0.97, "quote_volume": 100000000.0}], "market_mood": {}, "news": [], "news_errors": [], "paper": {"starting_equity": 1000.0, "equity": 999.65, "cash": 999.65, "unrealised": 0.0, "total_return_pct": -0.03, "open_positions": 2, "closed_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "profit_factor": null, "avg_r": 0.0, "best_r": 0.0, "worst_r": 0.0, "total_fees": 0, "max_drawdown_pct": 0.04, "halted_reason": null, "positions": [{"id": "f7bde13f08", "symbol": "PUMP/USDT", "base": "PUMP", "mode": "swing", "direction": "long", "entry": 1037.0830123126648, "stop": 1019.6605833590571, "initial_stop": 1019.6605833590571, "targets": [1063.2166557430762, 1089.3502991734877], "size_units": 0.24106074155289392, "remaining_units": 0.24106074155289392, "notional": 250.0, "opened_at": "2026-08-22T18:26:53.288857+00:00", "entry_tf": "4h", "max_hold_bars": 30, "score": 75.5, "bars_held": 0, "realised_pnl": 0.0, "fees_paid": 0.175, "tp1_hit": false, "breakeven": false, "note": "high confidence, trending regime"}, {"id": "a42c6d10be", "symbol": "DUMP/USDT", "base": "DUMP", "mode": "swing", "direction": "short", "entry": 119.78436652934406, "stop": 122.08325396990962, "initial_stop": 122.08325396990962, "targets": [116.33603536849571, 112.88770420764736], "size_units": 2.087083709198032, "remaining_units": 2.087083709198032, "notional": 250.0, "opened_at": "2026-08-22T18:26:53.288905+00:00", "entry_tf": "4h", "max_hold_bars": 30, "score": -73.2, "bars_held": 0, "realised_pnl": 0.0, "fees_paid": 0.175, "tp1_hit": false, "breakeven": false, "note": "moderate confidence, trending regime"}], "recent_trades": [], "equity_curve_points": [{"t": "2026-08-22T18:26:53.288764+00:00", "equity": 1000.0}, {"t": "2026-08-22T18:26:55.301243+00:00", "equity": 999.65}]}, "paper_events": [], "live": {"gate": {"enabled": false}, "recent_orders": [], "this_scan": []}, "errors": [], "config": {"scalp": {"entry": "5m", "confirm": "15m", "bias": "1h", "min_score": 55.0}, "swing": {"entry": "4h", "confirm": "1d", "bias": "1d", "min_score": 50.0}, "risk": {"equity": 1000.0, "risk_per_trade_pct": 1.0, "max_open": 5}}};
+const POLL_MS = 60000;
+const LIVE = false;
+
+let state = INITIAL;
+let filters = {mode:null, actions:new Set(["enter","watch"]),
+               buckets:new Set(["large","small"]), sides:new Set(["long","short"])};
+let nextScanAt = null;
+
+/* ---------- formatting helpers ---------- */
+function fmtPrice(n){
+  if(n===null||n===undefined||isNaN(n)) return "–";
+  const a=Math.abs(n);
+  if(a>=1000) return n.toLocaleString(undefined,{maximumFractionDigits:2});
+  if(a>=1) return n.toFixed(4).replace(/0+$/,"").replace(/\.$/,"");
+  if(a>=0.01) return n.toFixed(5);
+  if(a>=0.0001) return n.toFixed(7);
+  return n.toExponential(3);
+}
+function fmtUsd(n){
+  if(n===null||n===undefined||isNaN(n)) return "–";
+  const s=n<0?"-":"";
+  return s+"$"+Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function fmtVol(n){
+  if(!n) return "–";
+  if(n>=1e9) return "$"+(n/1e9).toFixed(2)+"B";
+  if(n>=1e6) return "$"+(n/1e6).toFixed(1)+"M";
+  if(n>=1e3) return "$"+(n/1e3).toFixed(0)+"K";
+  return "$"+n.toFixed(0);
+}
+function pct(n,d){ if(n===null||n===undefined||isNaN(n)) return "–";
+  return (n>=0?"+":"")+n.toFixed(d===undefined?2:d)+"%"; }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function ago(iso){
+  if(!iso) return "–";
+  const s=Math.max(0,(Date.now()-new Date(iso).getTime())/1000);
+  if(s<60) return Math.floor(s)+"s ago";
+  if(s<3600) return Math.floor(s/60)+"m ago";
+  if(s<86400) return Math.floor(s/3600)+"h ago";
+  return Math.floor(s/86400)+"d ago";
+}
+const arrow = d => d==="long"?"↑":(d==="short"?"↓":"→");
+
+/* ---------- sparkline ---------- */
+function sparkline(vals, dir){
+  if(!vals || vals.length<3) return "";
+  const w=308,h=40,p=2;
+  const min=Math.min(...vals), max=Math.max(...vals), span=(max-min)||1;
+  const pts=vals.map((v,i)=>{
+    const x=p+(i/(vals.length-1))*(w-2*p);
+    const y=h-p-((v-min)/span)*(h-2*p);
+    return x.toFixed(1)+","+y.toFixed(1);
+  });
+  const stroke = dir==="long"?"var(--long)":(dir==="short"?"var(--short)":"var(--muted)");
+  const first=vals[0], last=vals[vals.length-1];
+  const delta=((last-first)/(first||1))*100;
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="40" preserveAspectRatio="none"
+      role="img" aria-label="Recent price path, ${delta>=0?"up":"down"} ${Math.abs(delta).toFixed(2)} percent">
+      <polyline points="${pts.join(" ")}" fill="none" stroke="${stroke}"
+        stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    </svg>`;
+}
+
+/* ---------- equity curve with hover ---------- */
+function equityChart(curve, start){
+  if(!curve || curve.length<2)
+    return '<div class="empty">No equity history yet — it builds as trades close.</div>';
+  const w=312,h=72,p=4;
+  const vals=curve.map(c=>c.equity);
+  const min=Math.min(...vals,start), max=Math.max(...vals,start), span=(max-min)||1;
+  const X=i=>p+(i/(curve.length-1))*(w-2*p);
+  const Y=v=>h-p-((v-min)/span)*(h-2*p);
+  const pts=curve.map((c,i)=>X(i).toFixed(1)+","+Y(c.equity).toFixed(1));
+  const baseY=Y(start).toFixed(1);
+  const up=vals[vals.length-1]>=start;
+  const col=up?"var(--long)":"var(--short)";
+  return `<svg id="eqSvg" viewBox="0 0 ${w} ${h}" width="100%" height="72"
+      preserveAspectRatio="none" role="img"
+      aria-label="Paper equity over time, currently ${fmtUsd(vals[vals.length-1])}">
+      <line x1="0" y1="${baseY}" x2="${w}" y2="${baseY}" stroke="var(--axis)"
+        stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>
+      <polyline points="${pts.join(" ")}" fill="none" stroke="${col}" stroke-width="2"
+        stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      <line id="eqCross" x1="0" y1="0" x2="0" y2="${h}" stroke="var(--muted)"
+        stroke-width="1" opacity="0" vector-effect="non-scaling-stroke"/>
+    </svg>`;
+}
+
+function wireEquityHover(curve){
+  const svg=document.getElementById("eqSvg");
+  if(!svg||!curve||curve.length<2) return;
+  const tip=document.getElementById("tip"), cross=document.getElementById("eqCross");
+  svg.addEventListener("mousemove", e=>{
+    const r=svg.getBoundingClientRect();
+    const frac=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
+    const i=Math.round(frac*(curve.length-1));
+    const pt=curve[i];
+    cross.setAttribute("x1", (frac*312).toFixed(1));
+    cross.setAttribute("x2", (frac*312).toFixed(1));
+    cross.setAttribute("opacity","0.7");
+    tip.innerHTML = `<strong>${fmtUsd(pt.equity)}</strong><br>${new Date(pt.t).toLocaleString()}`;
+    tip.style.opacity="1";
+    tip.style.left=Math.min(window.innerWidth-170, e.clientX+12)+"px";
+    tip.style.top=(e.clientY-46)+"px";
+  });
+  svg.addEventListener("mouseleave", ()=>{
+    tip.style.opacity="0"; cross.setAttribute("opacity","0");
+  });
+}
+
+/* ---------- tiles ---------- */
+function renderTiles(){
+  const c=state.counts||{}, mood=state.market_mood||{}, paper=state.paper;
+  const t=[];
+  t.push(tile("Signals firing", (c.enter||0), `${c.watch||0} on watch · ${c.symbols||0} scanned`));
+  t.push(tile("Long / Short",
+    `<span class="up">↑${c.long||0}</span> <span style="color:var(--muted)">/</span> <span class="down">↓${c.short||0}</span>`,
+    "of the firing signals"));
+  const ms=mood.sentiment;
+  const mcls = ms>0.12?"up":(ms<-0.12?"down":"neutral");
+  t.push(tile("News mood",
+    `<span class="${mcls}">${mood.label||"–"}</span>`,
+    `${mood.item_count||0} headlines${mood.macro_alert?" · ⚠ macro event":""}`));
+  if(paper){
+    const r=paper.total_return_pct||0;
+    t.push(tile("Paper equity", fmtUsd(paper.equity),
+      `<span class="${r>=0?"up":"down"}">${pct(r)}</span> from ${fmtUsd(paper.starting_equity)}`));
+    t.push(tile("Paper record",
+      `${paper.win_rate||0}<span style="font-size:15px;color:var(--muted)">%</span>`,
+      `${paper.wins||0}W / ${paper.losses||0}L · avg ${(paper.avg_r||0).toFixed(2)}R`));
+    t.push(tile("Open positions", `${paper.open_positions||0}`,
+      paper.halted_reason ? `<span class="down">halted</span>` :
+      `max drawdown ${(paper.max_drawdown_pct||0).toFixed(1)}%`));
+  }
+  document.getElementById("tiles").innerHTML=t.join("");
+}
+function tile(k,v,m){
+  return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div>
+          <div class="m">${m||""}</div></div>`;
+}
+
+/* ---------- signal cards ---------- */
+function renderCards(){
+  const modes=Object.keys(state.signals||{});
+  if(!filters.mode || !modes.includes(filters.mode)){
+    // open on whichever mode actually has something to show, so the page
+    // never greets you with "no signals" while the tiles say otherwise
+    let best=modes[0]||null, bestN=-1;
+    modes.forEach(m=>{
+      const sigs=state.signals[m]||[];
+      const n=sigs.filter(s=>s.action==="enter").length*100
+             + sigs.filter(s=>s.action==="watch").length;
+      if(n>bestN){ bestN=n; best=m; }
+    });
+    filters.mode=best;
+  }
+
+  document.getElementById("modeGrp").innerHTML = modes.map(m=>{
+    const cfg=(state.config&&state.config[m])||{};
+    const tfs = cfg.entry?` ${cfg.entry}`:"";
+    return `<button data-mode="${m}" aria-pressed="${m===filters.mode}">${
+      m==="scalp"?"Scalp":"Swing"}${tfs}</button>`;
+  }).join("");
+  document.querySelectorAll("#modeGrp button").forEach(b=>{
+    b.onclick=()=>{filters.mode=b.dataset.mode; render();};
+  });
+
+  let list=(state.signals&&state.signals[filters.mode])||[];
+  list=list.filter(s=>{
+    if(!filters.actions.has(s.action)) return false;
+    if(!filters.buckets.has(s.bucket)) return false;
+    if(s.action!=="none" && s.direction!=="flat" && !filters.sides.has(s.direction)) return false;
+    return true;
+  });
+
+  const el=document.getElementById("cards");
+  if(!list.length){
+    el.innerHTML=`<div class="empty" style="grid-column:1/-1">
+      No signals match these filters right now. That is a normal state —
+      most of the time the honest answer is "nothing worth trading".</div>`;
+    return;
+  }
+  el.innerHTML=list.map(card).join("");
+  document.querySelectorAll(".card details.votes").forEach(d=>{
+    d.addEventListener("toggle",()=>{ if(d.open) sessionStorage.setItem("v:"+d.dataset.k,"1");
+      else sessionStorage.removeItem("v:"+d.dataset.k); });
+    try{ if(sessionStorage.getItem("v:"+d.dataset.k)) d.open=true; }catch(e){}
+  });
+}
+
+function card(s){
+  const dirCls = s.direction==="long"?"long":(s.direction==="short"?"short":"flat");
+  const cardCls = s.action==="enter" ? ("enter-"+dirCls) : (s.action==="watch"?"watch":"");
+  const pillCls = s.action==="watch" ? "watch" : dirCls;
+  const label = s.action==="enter" ? s.direction.toUpperCase()
+              : (s.action==="watch" ? "WATCH "+s.direction.toUpperCase() : "NO TRADE");
+
+  const mag=Math.abs(s.score), half=Math.min(50, mag/2);
+  const fill = s.score>=0
+    ? `left:50%;width:${half}%;background:var(--long)`
+    : `right:50%;width:${half}%;background:var(--short)`;
+
+  const votes=(s.votes||[]).slice(0,6).map(v=>{
+    const w=Math.min(50,Math.abs(v.contribution)*38);
+    const st=v.score>=0?`left:50%;width:${w}%;background:var(--long)`
+                       :`right:50%;width:${w}%;background:var(--short)`;
+    return `<div class="vote"><div class="vn">${esc(v.name)}</div>
+      <div class="vb"><i style="${st}"></i></div>
+      <div class="vt">${esc(v.note)}</div></div>`;
+  }).join("");
+
+  const blocked=(s.warnings||[]).some(w=>w.startsWith("BLOCKED"));
+  const warns=(s.warnings||[]).length ? `<div class="warn${blocked?" block":""}">
+      <span>${blocked?"⛔":"⚠"}</span><ul>${
+      s.warnings.map(w=>`<li>${esc(w)}</li>`).join("")}</ul></div>` : "";
+
+  const heads=(s.news&&s.news.headlines||[]).slice(0,2).map(h=>
+    `<div style="font-size:11.5px;color:var(--muted);margin-top:3px">
+      ${h.score>=0?"▲":"▼"} ${esc(h.title.slice(0,84))}${h.title.length>84?"…":""}</div>`).join("");
+
+  const tgts=(s.targets||[]).map((t,i)=>
+    `<tr><td>Target ${i+1}</td><td>${fmtPrice(t)}</td></tr>`).join("");
+
+  const chgCls = s.change_24h>0?"up":(s.change_24h<0?"down":"neutral");
+
+  return `<article class="card ${cardCls}">
+    <div class="chead">
+      <div>
+        <div class="sym">${esc(s.base)}<span class="q">/${esc(s.symbol.split("/")[1]||"")}</span></div>
+        <div class="badges">
+          <span class="badge">${s.bucket} cap</span>
+          <span class="badge">${esc(s.regime)}</span>
+          <span class="badge">${esc(s.timeframes.entry)}→${esc(s.timeframes.bias)}</span>
+          <span class="badge">${esc(s.confidence)} conf</span>
+        </div>
+      </div>
+      <span class="pill ${pillCls}">${arrow(s.direction)} ${label}</span>
+    </div>
+
+    <div class="price-row">
+      <span class="price">${fmtPrice(s.price)}</span>
+      <span class="chg ${chgCls}">${pct(s.change_24h)} 24h · ${fmtVol(s.quote_volume)}</span>
+    </div>
+
+    ${sparkline(s.spark, s.direction)}
+
+    <div class="scorewrap">
+      <div class="scorebar"><div class="mid"></div><div class="fill" style="${fill}"></div></div>
+      <div class="scoretxt"><span>short</span>
+        <span>score ${s.score>=0?"+":""}${s.score.toFixed(0)} · ${s.confidence}</span>
+        <span>long</span></div>
+    </div>
+
+    <table class="lv">
+      <tr><td>Entry</td><td>${fmtPrice(s.entry)}</td></tr>
+      <tr><td>Stop loss</td><td style="color:#ff8080">${fmtPrice(s.stop)} (${s.risk_pct_move}%)</td></tr>
+      ${tgts}
+      <tr><td>Risk / reward</td><td>${s.rr}R to final</td></tr>
+      <tr><td>Size (${(state.config&&state.config.risk&&state.config.risk.risk_per_trade_pct)||1}% risk)</td>
+          <td>${fmtPrice(s.position_size_units)} ${esc(s.base)} · ${fmtUsd(s.position_notional)}</td></tr>
+      <tr><td>ATR (${esc(s.timeframes.entry)})</td><td>${s.atr_pct}% of price</td></tr>
+      <tr><td>${esc(s.timeframes.confirm)} confirm</td><td>${esc((s.confirm&&s.confirm.label)||"–")}</td></tr>
+      <tr><td>${esc(s.timeframes.bias)} bias</td><td>${esc((s.bias&&s.bias.label)||"–")}</td></tr>
+      <tr><td>Invalidation</td><td style="font-weight:400;color:var(--ink-2);font-size:11.5px">${esc(s.invalidation)}</td></tr>
+    </table>
+
+    ${warns}
+    ${heads?`<div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">News on ${esc(s.base)} · sentiment ${(s.news.sentiment>=0?"+":"")}${s.news.sentiment}</div>${heads}</div>`:""}
+
+    <details class="votes" data-k="${esc(s.symbol)}|${esc(s.mode)}">
+      <summary>Why — ${(s.votes||[]).length} indicator reads</summary>
+      ${votes}
+    </details>
+  </article>`;
+}
+
+/* ---------- side panels ---------- */
+function renderPaper(){
+  const p=state.paper, el=document.getElementById("paperPanel");
+  if(!p){ el.innerHTML='<h2>Paper trading</h2><div class="empty">Disabled in config.</div>'; return; }
+  const r=p.total_return_pct||0;
+  const pos=(p.positions||[]).map(x=>`<tr>
+      <td>${arrow(x.direction)} ${esc(x.base)}</td>
+      <td><span class="badge">${esc(x.mode)}</span></td>
+      <td>${fmtPrice(x.entry)}</td>
+      <td>${x.tp1_hit?"½ out":"full"}</td></tr>`).join("");
+  const trades=(p.recent_trades||[]).slice(0,8).map(t=>`<tr>
+      <td>${arrow(t.direction)} ${esc(t.base)}</td>
+      <td style="color:var(--muted)">${esc(t.reason)}</td>
+      <td class="${t.pnl>=0?"up":"down"}">${t.r_multiple>=0?"+":""}${t.r_multiple.toFixed(2)}R</td>
+      <td class="${t.pnl>=0?"up":"down"}">${fmtUsd(t.pnl)}</td></tr>`).join("");
+
+  el.innerHTML=`<h2>Paper trading <span class="c">${p.closed_trades||0} closed</span></h2>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+      <span style="font-size:21px;font-weight:640">${fmtUsd(p.equity)}</span>
+      <span class="${r>=0?"up":"down"}" style="font-size:13px;font-weight:600">${pct(r)}</span>
+    </div>
+    ${equityChart(p.equity_curve_points||[], p.starting_equity)}
+    <table class="lv" style="margin-top:8px">
+      <tr><td>Win rate</td><td>${p.win_rate}% (${p.wins}W/${p.losses}L)</td></tr>
+      <tr><td>Profit factor</td><td>${p.profit_factor===null?"–":p.profit_factor}</td></tr>
+      <tr><td>Avg / best / worst</td><td>${(p.avg_r||0).toFixed(2)}R / ${p.best_r}R / ${p.worst_r}R</td></tr>
+      <tr><td>Max drawdown</td><td>${p.max_drawdown_pct}%</td></tr>
+      <tr><td>Fees paid</td><td>${fmtUsd(p.total_fees)}</td></tr>
+    </table>
+    ${p.halted_reason?`<div class="warn block" style="margin-top:9px"><span>⛔</span><div>${esc(p.halted_reason)}</div></div>`:""}
+    ${pos?`<h2 style="margin-top:14px">Open</h2><table class="pos-table">
+      <thead><tr><th>Pair</th><th>Mode</th><th>Entry</th><th>State</th></tr></thead>
+      <tbody>${pos}</tbody></table>`:'<div class="empty">No open paper positions.</div>'}
+    ${trades?`<h2 style="margin-top:14px">Recent closes</h2><table class="pos-table">
+      <thead><tr><th>Pair</th><th>Exit</th><th>R</th><th>P&L</th></tr></thead>
+      <tbody>${trades}</tbody></table>`:""}`;
+  wireEquityHover(p.equity_curve_points||[]);
+}
+
+function renderLive(){
+  const l=(state.live&&state.live.gate)||{}, el=document.getElementById("livePanel");
+  if(!l.enabled){
+    el.innerHTML=`<h2>Live trading <span class="c">off</span></h2>
+      <div style="font-size:12.5px;color:var(--ink-2)">
+        Disabled in config. Signals and paper trading run; no order can leave this machine.
+      </div>`;
+    return;
+  }
+  const row=(ok,label)=>`<tr><td>${ok?"✓":"✗"} ${label}</td>
+    <td class="${ok?"up":"neutral"}">${ok?"open":"locked"}</td></tr>`;
+  el.innerHTML=`<h2>Live trading
+      <span class="c ${l.armed?"down":""}">${l.armed?"● ARMED":"safe"}</span></h2>
+    <table class="lv">
+      ${row(l.enabled,"enabled in config")}
+      ${row(!l.dry_run,"dry_run off")}
+      ${row(l.has_credentials,"API credentials")}
+      ${row(l.confirm_phrase_ok,"LIVE_CONFIRM set")}
+      <tr><td>Venue</td><td>${esc(l.exchange)}${l.testnet?" (testnet)":""}</td></tr>
+    </table>
+    ${l.armed?`<div class="warn block" style="margin-top:9px"><span>⛔</span>
+      <div>Real orders are being sent. Every lock is open.</div></div>`
+    :`<div style="font-size:11.5px;color:var(--muted);margin-top:8px">
+      Orders are simulated and written to state/orders.jsonl.</div>`}
+    ${l.blocked_reason?`<div style="font-size:11.5px;color:#ffb694;margin-top:7px">${esc(l.blocked_reason)}</div>`:""}`;
+}
+
+function renderNews(){
+  const items=state.news||[], el=document.getElementById("newsPanel");
+  if(!items.length){
+    el.innerHTML='<h2>Market news</h2><div class="empty">No headlines pulled yet.</div>';
+    return;
+  }
+  const mood=state.market_mood||{};
+  el.innerHTML=`<h2>Market news <span class="c">${mood.label||""}</span></h2>
+    ${items.slice(0,16).map(n=>{
+      const cls=n.score>0.5?"up":(n.score<-0.5?"down":"neutral");
+      return `<div class="news-item">
+        <div class="t">${n.critical?"⛔ ":""}${n.link?`<a href="${esc(n.link)}" target="_blank" rel="noopener">`:""}${esc(n.title)}${n.link?"</a>":""}</div>
+        <div class="m">
+          <span class="sent ${cls}">${n.score>=0?"+":""}${n.score.toFixed(1)}</span>
+          <span>${esc(n.source)}</span><span>${n.age_minutes}m</span>
+          ${(n.coins||[]).slice(0,4).map(c=>`<span class="tag">${esc(c)}</span>`).join("")}
+          ${n.macro?'<span class="tag">macro</span>':""}
+        </div></div>`;
+    }).join("")}`;
+}
+
+/* ---------- shell ---------- */
+function render(){
+  if(!state){ return; }
+  const dot=document.getElementById("statusDot");
+  const errs=(state.errors||[]);
+  document.getElementById("errBox").innerHTML = state.error
+    ? `<div class="err-box"><strong>Scan failed.</strong> ${esc(state.error)}</div>` : "";
+  dot.className="dot"+(state.error?" err":(errs.length?" stale":""));
+
+  document.getElementById("subline").textContent =
+    `${state.exchange||"–"} ${state.market_type||""} · ${(state.counts&&state.counts.symbols)||0} pairs · `+
+    `scan #${state.scan_number||0} ${ago(state.generated_at)} (${state.duration_seconds||0}s)`;
+
+  renderTiles(); renderCards(); renderPaper(); renderLive(); renderNews();
+
+  document.getElementById("foot").innerHTML =
+    `Scores combine multi-timeframe trend, momentum, volatility, volume, market structure and news
+     sentiment into one number per pair. A high score means several independent measures currently agree —
+     it is not a prediction, and it carries no guarantee. Sizing assumes
+     ${(state.config&&state.config.risk&&state.config.risk.risk_per_trade_pct)||1}% of
+     ${fmtUsd((state.config&&state.config.risk&&state.config.risk.equity)||0)} risked per trade.
+     ${errs.length?`<br><span style="color:#ffb694">${errs.length} symbol(s) failed this scan: ${esc(errs.slice(0,3).join("; "))}</span>`:""}`;
+}
+
+/* ---------- polling ---------- */
+async function fetchState(force){
+  if(!LIVE) return;
+  const btn=document.getElementById("refreshBtn");
+  try{
+    if(force){ btn.disabled=true; btn.textContent="Scanning…"; }
+    const r=await fetch(force?"/api/scan":"/api/state",{cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const d=await r.json();
+    if(d && d.generated_at){ state=d; render(); }
+    nextScanAt=Date.now()+POLL_MS;
+  }catch(e){
+    document.getElementById("statusDot").className="dot err";
+  }finally{
+    btn.disabled=false; btn.textContent="Rescan now";
+  }
+}
+
+function tickCountdown(){
+  const el=document.getElementById("countdown");
+  if(!LIVE || !nextScanAt){ el.textContent = LIVE?"":"static snapshot"; return; }
+  const s=Math.max(0,Math.round((nextScanAt-Date.now())/1000));
+  el.textContent = "next scan in "+s+"s";
+}
+
+/* ---------- filter wiring ---------- */
+function wireToggles(id, set, key){
+  document.querySelectorAll(`#${id} button`).forEach(b=>{
+    b.onclick=()=>{
+      const v=b.dataset[key];
+      if(id==="actionGrp" && v==="none"){
+        const on=b.getAttribute("aria-pressed")==="true";
+        if(on){ set.delete("none"); } else { set.add("none"); }
+        b.setAttribute("aria-pressed", (!on).toString());
+      }else{
+        if(set.has(v)){ if(set.size>1||id==="actionGrp"){ set.delete(v); b.setAttribute("aria-pressed","false"); } }
+        else { set.add(v); b.setAttribute("aria-pressed","true"); }
+      }
+      renderCards();
+    };
+  });
+}
+wireToggles("actionGrp", filters.actions, "action");
+wireToggles("bucketGrp", filters.buckets, "bucket");
+wireToggles("sideGrp", filters.sides, "side");
+document.getElementById("refreshBtn").onclick=()=>fetchState(true);
+
+render();
+if(LIVE){
+  nextScanAt=Date.now()+POLL_MS;
+  setInterval(()=>fetchState(false), POLL_MS);
+}
+setInterval(tickCountdown, 1000);
+tickCountdown();
+</script>
+</body>
+</html>
