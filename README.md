@@ -215,6 +215,45 @@ you have watched it for a while you will probably want 65–70 for scalps.
 
 ---
 
+## Deploy free on Render
+
+`render.yaml` describes the whole service, so deploying is mostly clicking.
+
+1. **Make a free Postgres database** at [neon.tech](https://neon.tech) (or
+   Supabase) and copy its connection string (`postgresql://…`). Sign-ups and
+   feedback are stored there, because Render's free disk is wiped on restart.
+2. In [Render](https://render.com): **New → Blueprint**, connect GitHub and
+   give Render access to this repo, then pick it. Render reads `render.yaml`.
+3. When asked for `DATABASE_URL`, paste the string from step 1. `SECRET_KEY`
+   and `ADMIN_TOKEN` are generated for you.
+4. Deploy. The site comes up at `https://crypto-signal-desk-xxxx.onrender.com`.
+   Read feedback at `/admin/feedback?token=<ADMIN_TOKEN>` (the value is under
+   the service's **Environment** tab).
+
+Notes:
+
+- The service runs in **Frankfurt**. Binance refuses API calls from US servers.
+- **The free plan sleeps** after 15 minutes without visitors. The next visit
+  wakes it in about a minute, and the first market scan takes another ~30s.
+- **The public site never trades.** `BOT_LIVE_ENABLED=false` overrides
+  `config.yaml`. Don't put exchange keys on a hosted service.
+- **The practice account resets** on every restart or deploy.
+
+### Environment variables
+
+| Variable | What it does |
+|---|---|
+| `PORT`, `BOT_HOST` | Where the server listens (set by the host / `0.0.0.0`) |
+| `DATABASE_URL` | Postgres for sign-ups and feedback; files under `state/` if unset |
+| `SECRET_KEY` | Signs login cookies; keeps users signed in across restarts |
+| `ADMIN_TOKEN` | Password for `/admin/feedback`; without it, only localhost gets in |
+| `BOT_LIVE_ENABLED` | `false` forces live trading off, whatever `config.yaml` says |
+| `BOT_OPEN_BROWSER` | `false` on servers |
+| `BOT_STATE_DIR` | Where the paper state and order log are written |
+| `EXCHANGE_API_KEY`, `EXCHANGE_API_SECRET`, `LIVE_CONFIRM` | Local live trading only; put them in `.env` (git-ignored) |
+
+---
+
 ## HTTP API
 
 The server exposes JSON if you want to build on it:

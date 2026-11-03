@@ -1,0 +1,31 @@
+# Render blueprint — New → Blueprint → pick this repo.
+# Free plan: sleeps after 15 minutes without visitors and wakes on the next
+# request (~1 minute). Its disk is wiped on restart, so sign-ups and feedback
+# live in Postgres (DATABASE_URL); the practice account starts fresh each time.
+services:
+  - type: web
+    name: crypto-signal-desk
+    runtime: python
+    plan: free
+    region: frankfurt          # Binance refuses API calls from US servers
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py serve
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: BOT_HOST
+        value: 0.0.0.0
+      - key: BOT_OPEN_BROWSER
+        value: "false"
+      # the public site analyses and paper-trades only; it can never place orders
+      - key: BOT_LIVE_ENABLED
+        value: "false"
+      - key: SECRET_KEY            # signs login cookies; stable across restarts
+        generateValue: true
+      - key: ADMIN_TOKEN           # open /admin/feedback?token=<this value>
+        generateValue: true
+      - key: DATABASE_URL          # paste your free Neon/Supabase Postgres URL
+        sync: false

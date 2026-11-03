@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from flask import Flask, Response, jsonify, redirect, request, session
 
-from .accounts import IMPROVE_AREAS, Accounts, valid_email
+from .accounts import IMPROVE_AREAS, Accounts, make_accounts, valid_email
 from .config import Config
 from .dashboard import render_page
 from .landing import render_admin, render_landing
@@ -26,7 +26,7 @@ PUBLIC_PATHS = {"/", "/api/signup", "/healthz", "/logout"}
 def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) -> Flask:
     app = Flask(__name__)
     app.json.sort_keys = False          # Flask 3 ignores the old JSON_SORT_KEYS setting
-    accounts = accounts or Accounts()
+    accounts = accounts or make_accounts()
     app.secret_key = accounts.session_secret()
     app.config.update(SESSION_COOKIE_SAMESITE="Lax",
                       PERMANENT_SESSION_LIFETIME=timedelta(days=90))
@@ -208,9 +208,8 @@ def scan_loop(scanner: Scanner, interval: int, stop_event: threading.Event):
 
 def serve(cfg: Config):
     scanner = Scanner(cfg)
-    log.info("running first scan before serving…")
-    scanner.scan()
-
+    # the loop runs the first scan straight away; serving starts at once so a
+    # host's port check passes while that scan is still downloading candles
     stop_event = threading.Event()
     thread = threading.Thread(
         target=scan_loop,

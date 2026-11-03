@@ -61,6 +61,21 @@ PAGE = r"""<!doctype html>
     letter-spacing:.06em;margin-bottom:5px}
   .tile .v{font-size:24px;font-weight:640;letter-spacing:-0.02em}
   .tile .m{color:var(--ink-2);font-size:12px;margin-top:2px}
+  .mood-v{display:flex;align-items:center;gap:8px;font-size:21px}
+  .mood-ic{font-size:22px;line-height:1}
+  .mood-meter{position:relative;height:6px;border-radius:3px;margin:9px 0 3px;
+    background:linear-gradient(90deg,#d03b3b,#5a5a55 50%,#0ca30c)}
+  .mood-meter i{position:absolute;top:50%;width:12px;height:12px;border-radius:50%;background:#fff;
+    border:2px solid var(--surface);transform:translate(-50%,-50%);box-shadow:0 0 0 1px rgba(0,0,0,.4)}
+  .mood-ends{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.06em}
+  .mood-m{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
+  .mood-m a{color:var(--ink-2)}
+  .live-badge{font-size:12px;font-weight:650;padding:5px 10px;border-radius:999px;white-space:nowrap;cursor:help}
+  .live-badge.test{color:#ffce5e;background:rgba(250,178,25,.13);border:1px solid rgba(250,178,25,.45)}
+  .live-badge.real{color:#fff;background:#d03b3b;border:1px solid #ff8080}
+  .macro-pill{font-size:11px;font-weight:600;color:#ffce5e;background:rgba(250,178,25,.13);
+    border:1px solid rgba(250,178,25,.4);border-radius:999px;padding:1px 8px;cursor:help}
 
   .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
   .bar .grp{display:flex;gap:4px;background:var(--surface);padding:4px;
@@ -319,6 +334,7 @@ PAGE = r"""<!doctype html>
       <a href="https://www.tradingview.com/education/" target="_blank" rel="noopener"
         style="font-size:13px">Learn trading on TradingView ↗</a>
       <span class="sub" id="countdown" style="color:var(--muted);font-size:12px"></span>
+      <span id="liveBadge"></span>
       <button id="feedbackBtn" class="live-only">Feedback</button>
       <button id="refreshBtn" class="primary">Rescan now</button>
       <a href="/logout" class="live-only" style="font-size:12.5px;color:var(--muted)">Sign out</a>
@@ -391,7 +407,6 @@ PAGE = r"""<!doctype html>
           if the stop is hit, and what you make at each target. Saved in this browser only.</div>
       </div>
       <div class="panel" id="paperPanel"></div>
-      <div class="panel" id="livePanel"></div>
       <div class="panel" id="newsPanel"></div>
     </aside>
   </div>
@@ -566,11 +581,7 @@ function renderTiles(){
   t.push(tile("Long / Short",
     `<span class="up">↑${c.long||0}</span> <span style="color:var(--muted)">/</span> <span class="down">↓${c.short||0}</span>`,
     "of the firing signals"));
-  const ms=mood.sentiment;
-  const mcls = ms>0.12?"up":(ms<-0.12?"down":"neutral");
-  t.push(tile("News mood",
-    `<span class="${mcls}">${mood.label||"–"}</span>`,
-    `${mood.item_count||0} headlines${mood.macro_alert?" · ⚠ macro event":""}`));
+  t.push(moodTile(mood));
   if(paper){
     const r=paper.total_return_pct||0;
     t.push(tile("Practice balance", fmtUsd(paper.equity),
@@ -582,6 +593,21 @@ function renderTiles(){
       paper.halted_reason ? `<span class="down">paused for today</span>` : "see the panel on the right"));
   }
   document.getElementById("tiles").innerHTML=t.join("");
+}
+function moodTile(mood){
+  const ms=mood.sentiment||0, label=mood.label||"no data";
+  const cls=ms>0.12?"up":(ms<-0.12?"down":"neutral");
+  const icon=label==="no data"?"📰":(ms>0.12?"🐂":(ms<-0.12?"🐻":"⚖️"));
+  const pos=((Math.max(-1,Math.min(1,ms))+1)/2*100).toFixed(1);
+  const nice=label.charAt(0).toUpperCase()+label.slice(1);
+  return `<div class="tile mood-tile"><div class="k">News mood</div>
+    <div class="v mood-v"><span class="mood-ic" aria-hidden="true">${icon}</span><span class="${cls}">${esc(nice)}</span></div>
+    <div class="mood-meter" role="img" aria-label="News sentiment ${esc(label)}, ${(ms*100).toFixed(0)} on a scale from -100 bearish to +100 bullish">
+      <i style="left:${pos}%"></i></div>
+    <div class="mood-ends"><span>Bear</span><span>Bull</span></div>
+    <div class="m mood-m"><a href="#newsPanel">${mood.item_count||0} headlines →</a>
+      ${mood.macro_alert?`<span class="macro-pill" title="Fed, inflation, ETF or regulation headlines in the last 6 hours. These move the whole market at once.">⚡ Big macro news</span>`:""}</div>
+  </div>`;
 }
 function tile(k,v,m){
   return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div>
@@ -1269,30 +1295,13 @@ function renderPaper(){
 }
 
 function renderLive(){
-  const l=(state.live&&state.live.gate)||{}, el=document.getElementById("livePanel");
-  if(!l.enabled){
-    el.innerHTML=`<h2>Live trading <span class="c">off</span></h2>
-      <div style="font-size:12.5px;color:var(--ink-2)">
-        Disabled in config. Signals and paper trading run; no order can leave this machine.
-      </div>`;
-    return;
-  }
-  const row=(ok,label)=>`<tr><td>${ok?"✓":"✗"} ${label}</td>
-    <td class="${ok?"up":"neutral"}">${ok?"open":"locked"}</td></tr>`;
-  el.innerHTML=`<h2>Live trading
-      <span class="c ${l.armed?"down":""}">${l.armed?"● ARMED":"safe"}</span></h2>
-    <table class="lv">
-      ${row(l.enabled,"enabled in config")}
-      ${row(!l.dry_run,"dry_run off")}
-      ${row(l.has_credentials,"API credentials")}
-      ${row(l.confirm_phrase_ok,"LIVE_CONFIRM set")}
-      <tr><td>Venue</td><td>${esc(l.exchange)}${l.testnet?" (testnet)":""}</td></tr>
-    </table>
-    ${l.armed?`<div class="warn block" style="margin-top:9px"><span>⛔</span>
-      <div>Real orders are being sent. Every lock is open.</div></div>`
-    :`<div style="font-size:11.5px;color:var(--muted);margin-top:8px">
-      Orders are simulated and written to state/orders.jsonl.</div>`}
-    ${l.blocked_reason?`<div style="font-size:11.5px;color:#ffb694;margin-top:7px">${esc(l.blocked_reason)}</div>`:""}`;
+  // the lock-by-lock panel is hidden for now; while orders are actually being
+  // sent a header badge stays, so the page never hides that orders go out
+  const l=(state.live&&state.live.gate)||{}, el=document.getElementById("liveBadge");
+  if(!l.armed){ el.innerHTML=""; return; }
+  el.innerHTML = l.testnet
+    ? `<span class="live-badge test" title="Play-money orders are being sent to the ${esc(l.exchange)} testnet">● Testnet orders on</span>`
+    : `<span class="live-badge real" title="Real orders with real money are being sent to ${esc(l.exchange)}">● REAL-MONEY ORDERS ON</span>`;
 }
 
 function renderNews(){
@@ -1318,7 +1327,7 @@ function renderNews(){
 
 /* ---------- shell ---------- */
 function render(){
-  if(!state){ return; }
+  if(!state || !state.generated_at){ return; }   // nothing scanned yet
   const dot=document.getElementById("statusDot");
   const errs=(state.errors||[]);
   document.getElementById("errBox").innerHTML = state.error
@@ -1399,6 +1408,12 @@ render();
 if(LIVE){
   nextScanAt=Date.now()+POLL_MS;
   setInterval(()=>fetchState(false), POLL_MS);
+  // a freshly started server serves the page before its first scan finishes
+  if(!(state&&state.generated_at)){
+    document.getElementById("subline").textContent="first market scan running — about 30 seconds…";
+    const warm=setInterval(async()=>{ await fetchState(false);
+      if(state&&state.generated_at) clearInterval(warm); }, 3000);
+  }
 }
 setInterval(tickCountdown, 1000);
 tickCountdown();

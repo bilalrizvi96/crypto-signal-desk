@@ -110,6 +110,9 @@ class LiveTrader:
                     self.blocked_reason = f"{self.cfg.exchange} has no sandbox in ccxt"
                     return
             ex.load_markets()
+            # sync_positions lists every open order once a scan; ccxt refuses
+            # that without an explicit opt-in to the heavier rate-limit weight
+            ex.options.setdefault("fetchOpenOrders", {})["warnWithoutSymbol"] = False
             self.exchange = ex
             log.info("live exchange ready: %s (testnet=%s)",
                      self.cfg.exchange, self.cfg.testnet)
@@ -205,6 +208,8 @@ class LiveTrader:
         """Best-effort protective stop + take-profit. Support varies by venue,
         so a failure here is logged loudly rather than raised — you must be
         watching the position either way."""
+        if self.cfg.market_type not in ("swap", "future"):
+            return self._attach_spot_exits(sig, amount)
         exit_side = "sell" if entry_side == "buy" else "buy"
         try:
             self.exchange.create_order(
@@ -227,6 +232,46 @@ class LiveTrader:
         except Exception as exc:
             log.warning("could not place take-profit for %s: %s", sig.symbol, exc)
 
+    STOP_LIMIT_SLACK = 0.005   # stop-limit sells up to 0.5% below the trigger so it fills in a fall
+
+    def _attach_spot_exits(self, sig, amount: float):
+        """Spot has no stop_market or reduceOnly. Protect a long with one OCO
+        sell — take-profit limit above, stop-limit below; whichever fills
+        cancels the other — and fall back to a lone stop-limit if the market
+        refuses OCO. Sells only what is actually held: Binance takes the buy
+        fee out of the coin bought, so the balance is a little under `amount`."""
+        ex, sym = self.exchange, sig.symbol
+        try:
+            base = ex.market(sym)["base"]
+            free = float((ex.fetch_balance().get("free") or {}).get(base) or 0.0)
+            qty = float(ex.amount_to_precision(sym, min(amount, free) if free else amount))
+        except Exception as exc:
+            log.error("COULD NOT PLACE STOP for %s (balance check failed: %s) — manage this manually",
+                      sym, exc)
+            return
+        stop = float(ex.price_to_precision(sym, sig.stop))
+        stop_limit = float(ex.price_to_precision(sym, sig.stop * (1 - self.STOP_LIMIT_SLACK)))
+        target = float(ex.price_to_precision(sym, sig.targets[-1]))
+        try:
+            ex.privatePostOrderListOco({
+                "symbol": ex.market_id(sym), "side": "SELL",
+                "quantity": ex.amount_to_precision(sym, qty),
+                "aboveType": "LIMIT_MAKER", "abovePrice": ex.price_to_precision(sym, target),
+                "belowType": "STOP_LOSS_LIMIT", "belowStopPrice": ex.price_to_precision(sym, stop),
+                "belowPrice": ex.price_to_precision(sym, stop_limit), "belowTimeInForce": "GTC",
+            })
+            log.info("OCO placed for %s: stop %.6g / target %.6g on %.8g", sym, stop, target, qty)
+            return
+        except Exception as exc:
+            log.warning("OCO refused for %s (%s); placing a stop-loss only", sym, exc)
+        try:
+            ex.create_order(sym, "STOP_LOSS_LIMIT", "sell", qty, stop_limit,
+                            {"stopPrice": stop, "timeInForce": "GTC"})
+            log.info("stop-loss placed for %s @ %.6g (no take-profit — exit at target by hand)",
+                     sym, stop)
+        except Exception as exc:
+            log.error("COULD NOT PLACE STOP for %s (%s) — manage this manually", sym, exc)
+
     def sync_positions(self):
         """Refresh the set of symbols we currently hold, when the venue supports it."""
         if not self.exchange:
@@ -239,10 +284,24 @@ class LiveTrader:
                         p["symbol"] for p in positions
                         if abs(float(p.get("contracts") or 0)) > 0
                     }
-            elif self.exchange.has.get("fetchOpenOrders"):
-                orders = self.exchange.fetch_open_orders()
+            else:
+                # a filled spot buy leaves no open order behind, so also count
+                # anything this bot bought that the account still mostly holds —
+                # otherwise a restart forgets the position and buys it again
+                held = set()
+                if self.exchange.has.get("fetchOpenOrders"):
+                    held |= {o["symbol"] for o in self.exchange.fetch_open_orders()}
+                totals = self.exchange.fetch_balance().get("total") or {}
+                bought: dict[str, float] = {}
+                for r in self.recent_orders(limit=500):          # newest first
+                    if r.get("status") == "sent" and r.get("side") == "buy":
+                        bought.setdefault(r["symbol"], float(r.get("amount") or 0))
+                for sym, amount in bought.items():
+                    base = sym.split("/")[0]
+                    if amount and float(totals.get(base) or 0) >= 0.5 * amount:
+                        held.add(sym)
                 with self._lock:
-                    self.open_symbols = {o["symbol"] for o in orders}
+                    self.open_symbols = held
         except Exception as exc:
             log.warning("position sync failed: %s", exc)
 

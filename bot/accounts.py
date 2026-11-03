@@ -1,4 +1,5 @@
-"""Sign-ups and feedback — append-only JSONL files under state/.
+"""Sign-ups and feedback — JSONL files under state/, or Postgres when
+DATABASE_URL is set (free hosts wipe their disk on every restart).
 
 Deliberately simple: an email gets you into the dashboard, and feedback is
 written where you can read it. This is an access list, not authentication —
@@ -7,11 +8,13 @@ anyone can type any address — so do not put anything private behind it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import STATE_DIR
 
@@ -58,6 +61,8 @@ class Accounts:
 
     def session_secret(self) -> str:
         """Stable across restarts so signed-in browsers stay signed in."""
+        if os.getenv("SECRET_KEY"):
+            return os.environ["SECRET_KEY"]
         with _lock:
             if self.secret_path.exists():
                 try:
@@ -108,3 +113,94 @@ class Accounts:
             "avg_rating": round(sum(ratings) / len(ratings), 2) if ratings else None,
             "improve_votes": dict(sorted(areas.items(), key=lambda kv: -kv[1])),
         }
+
+
+class PgAccounts(Accounts):
+    """Same interface, stored in Postgres. One short connection per call:
+    sign-ups and feedback are rare, and it keeps threads from sharing one."""
+
+    SCHEMA = (
+        "CREATE TABLE IF NOT EXISTS signups (email TEXT PRIMARY KEY, "
+        "at TIMESTAMPTZ NOT NULL, source TEXT)",
+        "CREATE TABLE IF NOT EXISTS feedback (id SERIAL PRIMARY KEY, email TEXT, "
+        "at TIMESTAMPTZ NOT NULL, rating INT, liked TEXT, improve TEXT, message TEXT)",
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    )
+
+    def __init__(self, url: str):
+        u = urlparse(url)
+        q = parse_qs(u.query)
+        local = u.hostname in (None, "", "localhost", "127.0.0.1")
+        self._params = {
+            "user": unquote(u.username or ""), "password": unquote(u.password or "") or None,
+            "host": u.hostname or "localhost", "port": u.port or 5432,
+            "database": (u.path or "/").lstrip("/") or "postgres",
+        }
+        # hosted Postgres (Neon, Supabase, Render) requires TLS; local doesn't
+        if q.get("sslmode", [""])[0] != "disable" and not local:
+            self._params["ssl_context"] = True
+        for stmt in self.SCHEMA:
+            self._run(stmt)
+
+    def _run(self, sql: str, **params):
+        import pg8000.native
+        conn = pg8000.native.Connection(**self._params)
+        try:
+            return conn.run(sql, **params)
+        finally:
+            conn.close()
+
+    def session_secret(self) -> str:
+        if os.getenv("SECRET_KEY"):
+            return os.environ["SECRET_KEY"]
+        rows = self._run("SELECT value FROM settings WHERE key = 'session_secret'")
+        if rows:
+            return rows[0][0]
+        key = secrets.token_hex(32)
+        self._run("INSERT INTO settings (key, value) VALUES ('session_secret', :v) "
+                  "ON CONFLICT (key) DO NOTHING", v=key)
+        return self._run("SELECT value FROM settings WHERE key = 'session_secret'")[0][0]
+
+    def signup(self, email: str, source: str = "landing") -> bool:
+        rows = self._run(
+            "INSERT INTO signups (email, at, source) VALUES (:e, now(), :s) "
+            "ON CONFLICT (email) DO NOTHING RETURNING email",
+            e=email.strip().lower(), s=source)
+        return bool(rows)
+
+    def feedback(self, email: str, rating: int | None, liked: str,
+                 improve: list[str], message: str) -> dict:
+        row = {
+            "email": email, "at": _now(),
+            "rating": rating if rating in (1, 2, 3, 4, 5) else None,
+            "liked": liked.strip()[:2000],
+            "improve": [a for a in improve if a in IMPROVE_AREAS],
+            "message": message.strip()[:4000],
+        }
+        self._run("INSERT INTO feedback (email, at, rating, liked, improve, message) "
+                  "VALUES (:e, now(), :r, :l, :i, :m)",
+                  e=row["email"], r=row["rating"], l=row["liked"],
+                  i=json.dumps(row["improve"]), m=row["message"])
+        return row
+
+    def signups(self) -> list[dict]:
+        return [{"email": e, "at": at.isoformat(), "source": src}
+                for e, at, src in self._run("SELECT email, at, source FROM signups ORDER BY at")]
+
+    def all_feedback(self) -> list[dict]:
+        out = []
+        for e, at, r, l, i, m in self._run(
+                "SELECT email, at, rating, liked, improve, message FROM feedback ORDER BY at"):
+            try:
+                improve = json.loads(i or "[]")
+            except json.JSONDecodeError:
+                improve = []
+            out.append({"email": e, "at": at.isoformat(), "rating": r, "liked": l or "",
+                        "improve": improve, "message": m or ""})
+        return out
+
+
+def make_accounts() -> Accounts:
+    """Postgres when DATABASE_URL is set, local files otherwise."""
+    url = os.getenv("DATABASE_URL")
+    return PgAccounts(url) if url else Accounts()

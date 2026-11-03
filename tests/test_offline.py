@@ -563,46 +563,62 @@ def test_dashboard(result):
 # ---------------------------------------------------------------------------
 def test_config_and_gating():
     print("\n[6] Config and live-trading gates")
-    cfg = load_config()
-    check("config.yaml loads", cfg.universe.exchange in ("binance", "bybit", "okx",
-                                                         "kraken", "kucoin"),
-          cfg.universe.exchange)
+    import os
+    env_before = dict(os.environ)
+    # read config.yaml without the local .env: tests must never see real keys
+    cfg_file = load_config(use_env_file=False)
+    check("config.yaml loads", cfg_file.universe.exchange in ("binance", "bybit", "okx",
+                                                              "kraken", "kucoin"),
+          cfg_file.universe.exchange)
+    check("scalp uses fast timeframes", cfg_file.scalp.entry_tf in ("1m", "3m", "5m", "15m"),
+          cfg_file.scalp.entry_tf)
+    check("swing uses slow timeframes", cfg_file.swing.entry_tf in ("1h", "4h", "1d"),
+          cfg_file.swing.entry_tf)
+    check("the test suite did not load .env", os.environ.get("LIVE_CONFIRM") == env_before.get("LIVE_CONFIRM"))
+
+    # safety checks run on the shipped code defaults, not on a local config
+    # someone has deliberately armed
+    cfg = Config()
     from bot.config import LiveCfg
     check("live trading defaults to off", LiveCfg().enabled is False)
     check("dry run defaults to on", cfg.live.dry_run is True)
     check("testnet defaults to on", cfg.live.testnet is True)
-    check("scalp uses fast timeframes", cfg.scalp.entry_tf in ("1m", "3m", "5m", "15m"),
-          cfg.scalp.entry_tf)
-    check("swing uses slow timeframes", cfg.swing.entry_tf in ("1h", "4h", "1d"),
-          cfg.swing.entry_tf)
 
     from bot.live import LiveTrader
-    import os
-    trader = LiveTrader(cfg.live, cfg.risk)
-    check("trader is not armed by default", trader.is_armed() is False)
-    gate = trader.gate_status()
-    check("gate reports every lock",
-          all(k in gate for k in ("enabled", "dry_run", "has_credentials",
-                                  "confirm_phrase_ok", "armed")))
+    real_init = LiveTrader._init_exchange
+    LiveTrader._init_exchange = lambda self: None          # no network, no exchange
+    try:
+        for k in ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "LIVE_CONFIRM"):
+            os.environ.pop(k, None)
+        trader = LiveTrader(cfg.live, cfg.risk)
+        check("trader is not armed by default", trader.is_armed() is False)
+        gate = trader.gate_status()
+        check("gate reports every lock",
+              all(k in gate for k in ("enabled", "dry_run", "has_credentials",
+                                      "confirm_phrase_ok", "armed")))
 
-    # even with credentials + confirm phrase, config still blocks
-    os.environ["EXCHANGE_API_KEY"] = "test"
-    os.environ["EXCHANGE_API_SECRET"] = "test"
-    os.environ["LIVE_CONFIRM"] = "I_UNDERSTAND_THE_RISK"
-    trader2 = LiveTrader(cfg.live, cfg.risk)
-    check("credentials alone do not arm it", trader2.is_armed() is False)
+        # even with credentials + confirm phrase, dry_run still blocks
+        os.environ["EXCHANGE_API_KEY"] = "test"
+        os.environ["EXCHANGE_API_SECRET"] = "test"
+        os.environ["LIVE_CONFIRM"] = "I_UNDERSTAND_THE_RISK"
+        live_on = LiveCfg(enabled=True)
+        trader2 = LiveTrader(live_on, cfg.risk)
+        check("credentials alone do not arm it", trader2.is_armed() is False)
 
-    from types import SimpleNamespace
-    trader2.log_path = Path("/tmp/csd_test_orders.jsonl")
-    short = SimpleNamespace(symbol="SOL/USDT", direction="short", action="enter", mode="scalp",
-                            position_size_units=0.1, entry=100.0, stop=101.0, targets=[99.0, 98.0])
-    rec = trader2.submit(short)
-    check("spot never sends a short as a sell",
-          trader2.cfg.market_type == "spot" and rec.status == "rejected" and "short" in rec.reason,
-          rec.reason[:60])
-    trader2.log_path.unlink(missing_ok=True)
-    for k in ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "LIVE_CONFIRM"):
-        os.environ.pop(k, None)
+        from types import SimpleNamespace
+        trader2.log_path = Path("/tmp/csd_test_orders.jsonl")
+        short = SimpleNamespace(symbol="SOL/USDT", direction="short", action="enter", mode="scalp",
+                                position_size_units=0.1, entry=100.0, stop=101.0,
+                                targets=[99.0, 98.0])
+        rec = trader2.submit(short)
+        check("spot never sends a short as a sell",
+              trader2.cfg.market_type == "spot" and rec.status == "rejected" and "short" in rec.reason,
+              rec.reason[:60])
+        trader2.log_path.unlink(missing_ok=True)
+    finally:
+        LiveTrader._init_exchange = real_init
+        os.environ.clear()
+        os.environ.update(env_before)
 
     # .env loading: shell wins, blanks and comments ignored, quotes stripped
     from bot.config import load_env_file
@@ -682,6 +698,41 @@ def test_server(result):
 
 
 # ---------------------------------------------------------------------------
+# 8. Postgres storage (only when TEST_DATABASE_URL points at a scratch database)
+# ---------------------------------------------------------------------------
+def test_postgres():
+    import os
+    url = os.getenv("TEST_DATABASE_URL")
+    print("\n[8] Postgres storage" + ("" if url else " — skipped, TEST_DATABASE_URL not set"))
+    if not url:
+        return
+    from bot.accounts import PgAccounts
+    saved_secret = os.environ.pop("SECRET_KEY", None)
+    a = PgAccounts(url)
+    try:
+        for t in ("signups", "feedback", "settings"):
+            a._run(f"DELETE FROM {t}")
+        check("pg: a new email signs up", a.signup("Pg@Example.com") is True)
+        check("pg: the same email is not a duplicate", a.signup("pg@example.com") is False
+              and len(a.signups()) == 1)
+        a.feedback("pg@example.com", 5, "charts", ["wallet", "bogus"], "alerts please")
+        fb = a.all_feedback()
+        check("pg: feedback round-trips with known areas only",
+              len(fb) == 1 and fb[0]["rating"] == 5 and fb[0]["improve"] == ["wallet"]
+              and fb[0]["message"] == "alerts please")
+        s = a.summary()
+        check("pg: summary counts it", s["signups"] == 1 and s["avg_rating"] == 5.0
+              and s["improve_votes"] == {"wallet": 1})
+        k1 = a.session_secret()
+        check("pg: session secret survives a restart", PgAccounts(url).session_secret() == k1)
+    finally:
+        for t in ("signups", "feedback", "settings"):
+            a._run(f"DROP TABLE IF EXISTS {t}")
+        if saved_secret is not None:
+            os.environ["SECRET_KEY"] = saved_secret
+
+
+# ---------------------------------------------------------------------------
 def main():
     print("═" * 74)
     print("  Crypto Signal Desk — offline test suite")
@@ -694,6 +745,7 @@ def main():
     test_dashboard(result)
     test_config_and_gating()
     test_server(result)
+    test_postgres()
 
     print("\n" + "═" * 74)
     print(f"  {len(PASS)} passed, {len(FAIL)} failed")

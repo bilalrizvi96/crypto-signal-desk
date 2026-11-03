@@ -10,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = ROOT / "config.yaml"
-STATE_DIR = ROOT / "state"
+STATE_DIR = Path(os.getenv("BOT_STATE_DIR") or ROOT / "state")   # paper state, order log
 
 
 @dataclass
@@ -152,6 +152,10 @@ def _merge(dc, data: dict):
     return dc
 
 
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def load_env_file(path: Path) -> list[str]:
     """Read KEY=VALUE lines from a .env file into os.environ.
 
@@ -174,8 +178,9 @@ def load_env_file(path: Path) -> list[str]:
     return loaded
 
 
-def load_config(path: str | Path | None = None) -> Config:
-    load_env_file(ROOT / ".env")
+def load_config(path: str | Path | None = None, use_env_file: bool = True) -> Config:
+    if use_env_file:
+        load_env_file(ROOT / ".env")
     cfg = Config()
     p = Path(path) if path else DEFAULT_CONFIG_PATH
     if p.exists():
@@ -190,6 +195,18 @@ def load_config(path: str | Path | None = None) -> Config:
         cfg.server.port = int(os.environ["BOT_PORT"])
     if os.getenv("BOT_EQUITY"):
         cfg.risk.account_equity = float(os.environ["BOT_EQUITY"])
+
+    # hosting platforms (Render, Koyeb…) hand the port in $PORT and need the
+    # server reachable from outside the container
+    if os.getenv("PORT"):
+        cfg.server.port = int(os.environ["PORT"])
+    if os.getenv("BOT_HOST"):
+        cfg.server.host = os.environ["BOT_HOST"]
+    if os.getenv("BOT_OPEN_BROWSER"):
+        cfg.server.open_browser = _truthy(os.environ["BOT_OPEN_BROWSER"])
+    # a public deployment sets this false so it can never trade, whatever config.yaml says
+    if os.getenv("BOT_LIVE_ENABLED"):
+        cfg.live.enabled = _truthy(os.environ["BOT_LIVE_ENABLED"])
 
     STATE_DIR.mkdir(exist_ok=True)
     return cfg
