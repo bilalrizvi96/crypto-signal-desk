@@ -47,6 +47,9 @@ class ModeCfg:
     max_hold_bars: int = 24            # paper trades time out after this many entry-TF bars
     min_atr_pct: float = 0.10          # skip dead markets (ATR < x% of price)
     max_atr_pct: float = 8.0           # skip blowoff volatility
+    # confirm/bias frames only read the trend, so they can make do with less
+    # history than the entry frame — 52 weekly bars is a year, 210 is four
+    min_htf_bars: int = 210
 
 
 @dataclass
@@ -118,6 +121,12 @@ class Config:
         watch_score=35.0, min_adx=20.0, max_hold_bars=30,
         min_atr_pct=0.5, max_atr_pct=25.0,
     ))
+    position: ModeCfg = field(default_factory=lambda: ModeCfg(
+        entry_tf="1d", confirm_tf="1w", bias_tf="1w", limit=400,
+        atr_stop_mult=2.0, targets_r=[2.0, 4.0], min_score=50.0,
+        watch_score=35.0, min_adx=18.0, max_hold_bars=60,
+        min_atr_pct=1.0, max_atr_pct=10.0, min_htf_bars=52,
+    ))
     news: NewsCfg = field(default_factory=NewsCfg)
     risk: RiskCfg = field(default_factory=RiskCfg)
     live: LiveCfg = field(default_factory=LiveCfg)
@@ -143,7 +152,30 @@ def _merge(dc, data: dict):
     return dc
 
 
+def load_env_file(path: Path) -> list[str]:
+    """Read KEY=VALUE lines from a .env file into os.environ.
+
+    Variables already set in the shell win, and blank values are skipped, so
+    an empty template never overrides anything. Returns the names it set.
+    """
+    if not path.exists():
+        return []
+    loaded = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
 def load_config(path: str | Path | None = None) -> Config:
+    load_env_file(ROOT / ".env")
     cfg = Config()
     p = Path(path) if path else DEFAULT_CONFIG_PATH
     if p.exists():

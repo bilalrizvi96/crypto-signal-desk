@@ -1,29 +1,120 @@
 """Flask server: serves the dashboard and runs the scan loop in the background."""
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 import threading
 import time
 import webbrowser
+from datetime import timedelta
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, redirect, request, session
 
+from .accounts import IMPROVE_AREAS, Accounts, valid_email
 from .config import Config
 from .dashboard import render_page
+from .landing import render_admin, render_landing
 from .scanner import Scanner
 
 log = logging.getLogger("bot.server")
 
+# reachable without signing up; everything else needs an email on file
+PUBLIC_PATHS = {"/", "/api/signup", "/healthz", "/logout"}
 
-def create_app(cfg: Config, scanner: Scanner) -> Flask:
+
+def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) -> Flask:
     app = Flask(__name__)
-    app.config["JSON_SORT_KEYS"] = False
+    app.json.sort_keys = False          # Flask 3 ignores the old JSON_SORT_KEYS setting
+    accounts = accounts or Accounts()
+    app.secret_key = accounts.session_secret()
+    app.config.update(SESSION_COOKIE_SAMESITE="Lax",
+                      PERMANENT_SESSION_LIFETIME=timedelta(days=90))
+
+    def admin_allowed() -> bool:
+        """ADMIN_TOKEN, if set, is required. Without it, only a browser on this
+        machine talking to it directly (no proxy in between) gets in."""
+        token = os.getenv("ADMIN_TOKEN")
+        if token:
+            given = request.args.get("token") or session.get("admin_token") or ""
+            if hmac.compare_digest(given, token):
+                session["admin_token"] = given
+                return True
+            return False
+        return (request.remote_addr in ("127.0.0.1", "::1")
+                and "X-Forwarded-For" not in request.headers)
+
+    @app.before_request
+    def require_signup():
+        path = request.path
+        if path in PUBLIC_PATHS or path.startswith("/admin"):
+            return None
+        if session.get("email"):
+            return None
+        if path.startswith("/api/"):
+            return jsonify({"error": "sign up with your email first"}), 401
+        return redirect("/")
 
     @app.get("/")
+    def landing():
+        if session.get("email"):
+            return redirect("/app")
+        return Response(render_landing(), mimetype="text/html")
+
+    @app.post("/api/signup")
+    def api_signup():
+        if not request.is_json:          # JSON only, so other sites can't post forms here
+            return jsonify({"ok": False, "error": "expected JSON"}), 415
+        email = str((request.get_json(silent=True) or {}).get("email", "")).strip().lower()
+        if not valid_email(email):
+            return jsonify({"ok": False, "error": "Please enter a valid email address."}), 400
+        is_new = accounts.signup(email)
+        session.permanent = True
+        session["email"] = email
+        log.info("sign-up: %s (%s)", email, "new" if is_new else "returning")
+        return jsonify({"ok": True, "new": is_new})
+
+    @app.get("/logout")
+    def logout():
+        session.clear()
+        return redirect("/")
+
+    @app.get("/app")
     def index():
         state = scanner.last_result()
         html = render_page(state, poll_ms=cfg.server.scan_interval_seconds * 1000, live=True)
         return Response(html, mimetype="text/html")
+
+    @app.post("/api/feedback")
+    def api_feedback():
+        if not request.is_json:
+            return jsonify({"ok": False, "error": "expected JSON"}), 415
+        data = request.get_json(silent=True) or {}
+        try:
+            rating = int(data.get("rating")) if data.get("rating") not in (None, "") else None
+        except (TypeError, ValueError):
+            rating = None
+        improve = data.get("improve") if isinstance(data.get("improve"), list) else []
+        liked, message = str(data.get("liked") or ""), str(data.get("message") or "")
+        if not (rating or improve or liked.strip() or message.strip()):
+            return jsonify({"ok": False, "error": "Add a rating or a few words first."}), 400
+        accounts.feedback(session["email"], rating, liked, [str(a) for a in improve], message)
+        return jsonify({"ok": True})
+
+    @app.get("/admin/feedback")
+    def admin_feedback():
+        if not admin_allowed():
+            return Response("Not allowed. Open this from the machine running the desk, "
+                            "or pass ?token=… when ADMIN_TOKEN is set.", status=403)
+        html = render_admin(accounts.summary(), accounts.signups(), accounts.all_feedback())
+        return Response(html, mimetype="text/html")
+
+    @app.get("/admin/feedback.json")
+    def admin_feedback_json():
+        if not admin_allowed():
+            return jsonify({"error": "not allowed"}), 403
+        return jsonify({"summary": accounts.summary(), "signups": accounts.signups(),
+                        "feedback": accounts.all_feedback(), "areas": IMPROVE_AREAS})
 
     @app.get("/api/state")
     def api_state():
@@ -46,9 +137,35 @@ def create_app(cfg: Config, scanner: Scanner) -> Flask:
                         "direction": s["direction"], "score": s["score"],
                         "confidence": s["confidence"], "entry": s["entry"],
                         "stop": s["stop"], "targets": s["targets"], "rr": s["rr"],
+                        "success": s.get("success"),
                     })
         out.sort(key=lambda s: -abs(s["score"]))
         return jsonify({"generated_at": state.get("generated_at"), "signals": out})
+
+    @app.get("/api/search")
+    def api_search():
+        """Coins and tokenized stocks matching ?q= by ticker or name."""
+        q = (request.args.get("q") or "").strip()[:40]
+        if not q:
+            return jsonify({"results": []})
+        try:
+            return jsonify({"results": scanner.search(q)})
+        except Exception as exc:
+            log.warning("search failed: %s", exc)
+            return jsonify({"results": [], "error": str(exc)}), 502
+
+    @app.get("/api/analyze")
+    def api_analyze():
+        """Full scalp + swing analysis for one pair, e.g. ?symbol=NVDAB/USDT."""
+        symbol = (request.args.get("symbol") or "").strip().upper()[:30]
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        try:
+            result = scanner.analyse_one(symbol)
+        except Exception as exc:
+            log.warning("analyze failed for %s: %s", symbol, exc)
+            return jsonify({"symbol": symbol, "error": str(exc)}), 502
+        return jsonify(result), (404 if result.get("error") else 200)
 
     @app.post("/api/paper/reset")
     def api_paper_reset():

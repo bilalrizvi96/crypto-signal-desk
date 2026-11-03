@@ -257,6 +257,19 @@ def test_paper(signals):
     check("R multiple is sane for a 1R/2R exit", 0.5 < trade.r_multiple < 2.5,
           f"{trade.r_multiple:.2f}R")
 
+    # a position only ages on its own timeframe's bars
+    age_path = Path("/tmp/paper_test_aging.json")
+    age_path.unlink(missing_ok=True)
+    ager = PaperBroker(cfg.risk, path=age_path)
+    aged = ager.open_from_signal(s_up)
+    check("aging test opened a position", aged is not None)
+    if aged:
+        ager.mark_to_market({s_up.symbol: aged.entry}, {(s_up.symbol, "other-tf")})
+        check("a bar on another timeframe does not age a position", aged.bars_held == 0)
+        ager.mark_to_market({s_up.symbol: aged.entry}, {(s_up.symbol, aged.entry_tf)})
+        check("a bar on its own timeframe ages it by one", aged.bars_held == 1)
+    age_path.unlink(missing_ok=True)
+
     # a losing trade
     s2 = signals[1]
     s2.action = "enter"
@@ -271,6 +284,18 @@ def test_paper(signals):
     check("win rate computed", stats["win_rate"] == 50.0, f"{stats['win_rate']}%")
     check("fees were charged", stats["total_fees"] > 0, f"${stats['total_fees']:.4f}")
     check("equity curve has points", len(stats["equity_curve_points"]) > 0)
+
+    # success estimate: 40% prior worth 10 trades, blended with 1W / 1L
+    fresh = PaperBroker(cfg.risk, path=Path("/tmp/paper_test_fresh.json"))
+    check("success chance starts at the 40% prior",
+          fresh.success_chance("scalp")["pct"] == 40.0
+          and fresh.success_chance("scalp")["basis"] == "prior")
+    modes = {t.mode for t in broker.closed}
+    if len(modes) == 1:
+        sc = broker.success_chance(modes.pop())
+        check("success chance blends paper results with the prior",
+              sc["pct"] == 41.7 and sc["trades"] == 2 and sc["basis"] == "paper",
+              f"{sc['pct']}% from {sc['trades']} trades")
 
     # persistence round-trip
     broker.save()
@@ -347,7 +372,7 @@ class FakeMarketData:
 
     def _df(self, symbol, timeframe):
         rule = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min",
-                "1h": "1h", "4h": "4h", "1d": "1D"}[timeframe]
+                "1h": "1h", "4h": "4h", "1d": "1D", "1w": "W-MON"}[timeframe]
         agg = self._base(symbol).resample(rule).agg(
             {"open": "first", "high": "max", "low": "min",
              "close": "last", "volume": "sum"}
@@ -356,6 +381,15 @@ class FakeMarketData:
 
     def fetch_ohlcv(self, symbol, timeframe, limit=400, ttl=None):
         return self._df(symbol, timeframe)
+
+    def symbol_info(self, symbol):
+        return next((s for s in self.build_universe() if s.symbol == symbol), None)
+
+    def search(self, query, limit=12):
+        q = query.upper()
+        return [{"symbol": s.symbol, "base": s.base, "name": "", "asset_class": "crypto",
+                 "last": s.last, "change_24h": s.change_24h, "quote_volume": s.quote_volume}
+                for s in self.build_universe() if q in s.base][:limit]
 
     def clear_cache(self):
         pass
@@ -376,7 +410,10 @@ def test_scan():
         state_path = Path("/tmp/paper_scan_state.json")
         state_path.unlink(missing_ok=True)
         sc = scanner_mod.Scanner(cfg)
+        # the broker loaded the real state/paper_state.json on construction;
+        # point it at a temp file and start empty so live positions can't leak in
         sc.paper.path = state_path
+        sc.paper.reset()
         result = sc.scan()
     finally:
         scanner_mod.MarketData = real_md
@@ -385,11 +422,11 @@ def test_scan():
     check("no fatal scan error", "error" not in result, str(result.get("error"))[:80])
     check("all 7 symbols scanned", result["counts"]["symbols"] == 7,
           f"{result['counts']['symbols']}")
-    check("both modes produced signals",
-          len(result["signals"].get("scalp", [])) == 7 and
-          len(result["signals"].get("swing", [])) == 7,
-          f"scalp {len(result['signals'].get('scalp', []))}, "
-          f"swing {len(result['signals'].get('swing', []))}")
+    counts = {m: len(result["signals"].get(m, [])) for m in ("scalp", "swing", "position")}
+    check("all three modes produced signals", all(n == 7 for n in counts.values()), str(counts))
+    pos_sig = next((s for s in result["signals"].get("position", [])), None)
+    check("long-term mode reads daily entries against weekly trend",
+          pos_sig is not None and pos_sig["timeframes"] == {"entry": "1d", "confirm": "1w", "bias": "1w"})
     check("no per-symbol errors", not result["errors"], str(result["errors"])[:100])
     check("counts are internally consistent",
           result["counts"]["long"] + result["counts"]["short"] <= result["counts"]["enter"])
@@ -408,6 +445,8 @@ def test_scan():
     check("every signal has entry/stop/targets",
           all(s["entry"] and s["stop"] and s["targets"] for s in every))
     check("every signal has a positive R:R", all(s["rr"] > 0 for s in every))
+    check("every signal carries a success chance",
+          all(0 < s["success"]["pct"] < 100 for s in every))
     check("stops are on the correct side of entry",
           all((s["stop"] < s["entry"]) if s["direction"] == "long"
               else (s["stop"] > s["entry"]) if s["direction"] == "short" else True
@@ -427,13 +466,50 @@ def test_scan():
 
     # swing positions must inherit the swing hold limit, not a hardcoded one
     for pos in paper["positions"]:
-        expected = cfg.swing.max_hold_bars if pos["mode"] == "swing" else cfg.scalp.max_hold_bars
+        expected = getattr(cfg, pos["mode"]).max_hold_bars
         check(f"{pos['mode']} position uses its own max hold ({expected} bars)",
               pos["max_hold_bars"] == expected, f"got {pos['max_hold_bars']}")
 
     # a second scan should not crash and should keep state
     result2 = sc.scan()
     check("second scan succeeds", result2["scan_number"] == 2)
+
+    # open positions keep their live price, even after leaving the scanned list
+    check("open positions carry a live mark and P&L",
+          all(p["mark"] is not None and p["unrealised"] is not None
+              for p in result2["paper"]["positions"]) and result2["paper"]["positions"])
+    held = {p.symbol for p in sc.paper.positions.values()}
+    sc._universe = [s for s in sc._universe if s.symbol not in held]
+    result3 = sc.scan()
+    check("a position whose coin left the scan list is still priced",
+          all(p["mark"] is not None for p in result3["paper"]["positions"]),
+          f"{len(held)} held")
+
+    # best-for-scalping ranking
+    best = result2.get("best_scalp", [])
+    check("best-for-scalping list is populated", 1 <= len(best) <= 5, f"{len(best)} picks")
+    check("best-for-scalping is ranked by fit",
+          all(best[i]["fit"]["score"] >= best[i + 1]["fit"]["score"] for i in range(len(best) - 1)))
+    check("scalp fit is 0–100 with a verdict",
+          all(0 <= b["fit"]["score"] <= 100 and b["fit"]["verdict"] in ("good", "fair", "poor")
+              for b in best))
+    check("only scalp signals carry a scalp fit",
+          all(not s["scalp_fit"] for s in result2["signals"]["swing"]))
+
+    # search + on-demand analysis
+    hits = sc.search("PU")
+    check("search finds a pair by ticker prefix", any(h["base"] == "PUMP" for h in hits))
+    open_before = len(sc.paper.positions)
+    one = sc.analyse_one("PUMP/USDT")
+    check("analysing one pair returns every mode",
+          {s["mode"] for s in one.get("signals", [])} == {"scalp", "swing", "position"},
+          str(one.get("error", ""))[:60])
+    check("analysis includes a scalp fit", bool(one.get("scalp_fit")))
+    check("analysed signals carry a success chance",
+          all(s["success"]["pct"] > 0 for s in one.get("signals", [])))
+    check("analysing does not open paper positions", len(sc.paper.positions) == open_before)
+    check("unknown pair returns an error, not a crash",
+          "error" in sc.analyse_one("NOPE/USDT"))
 
     Path("/tmp/paper_scan_state.json").unlink(missing_ok=True)
     return result2
@@ -474,6 +550,9 @@ def test_dashboard(result):
     live_html = render_page(result, poll_ms=60000, live=True)
     check("live variant sets LIVE = true", "const LIVE = true;" in live_html)
     check("static variant sets LIVE = false", "const LIVE = false;" in html)
+    check("search box, wallet and learn link present",
+          'id="searchInput"' in html and 'id="walletPanel"' in html
+          and "tradingview.com/education" in html)
 
     print(f"      → wrote {out}")
     return out
@@ -488,7 +567,8 @@ def test_config_and_gating():
     check("config.yaml loads", cfg.universe.exchange in ("binance", "bybit", "okx",
                                                          "kraken", "kucoin"),
           cfg.universe.exchange)
-    check("live trading defaults to off", cfg.live.enabled is False)
+    from bot.config import LiveCfg
+    check("live trading defaults to off", LiveCfg().enabled is False)
     check("dry run defaults to on", cfg.live.dry_run is True)
     check("testnet defaults to on", cfg.live.testnet is True)
     check("scalp uses fast timeframes", cfg.scalp.entry_tf in ("1m", "3m", "5m", "15m"),
@@ -511,8 +591,94 @@ def test_config_and_gating():
     os.environ["LIVE_CONFIRM"] = "I_UNDERSTAND_THE_RISK"
     trader2 = LiveTrader(cfg.live, cfg.risk)
     check("credentials alone do not arm it", trader2.is_armed() is False)
+
+    from types import SimpleNamespace
+    trader2.log_path = Path("/tmp/csd_test_orders.jsonl")
+    short = SimpleNamespace(symbol="SOL/USDT", direction="short", action="enter", mode="scalp",
+                            position_size_units=0.1, entry=100.0, stop=101.0, targets=[99.0, 98.0])
+    rec = trader2.submit(short)
+    check("spot never sends a short as a sell",
+          trader2.cfg.market_type == "spot" and rec.status == "rejected" and "short" in rec.reason,
+          rec.reason[:60])
+    trader2.log_path.unlink(missing_ok=True)
     for k in ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "LIVE_CONFIRM"):
         os.environ.pop(k, None)
+
+    # .env loading: shell wins, blanks and comments ignored, quotes stripped
+    from bot.config import load_env_file
+    env = Path("/tmp/csd_test.env")
+    env.write_text('# comment\nCSD_T_A="quoted"\nexport CSD_T_B=plain\nCSD_T_EMPTY=\nCSD_T_SHELL=file\n')
+    os.environ["CSD_T_SHELL"] = "shell"
+    loaded = load_env_file(env)
+    check(".env values load, quotes stripped",
+          os.environ.get("CSD_T_A") == "quoted" and os.environ.get("CSD_T_B") == "plain")
+    check(".env skips blanks and never overrides the shell",
+          "CSD_T_EMPTY" not in os.environ and os.environ["CSD_T_SHELL"] == "shell"
+          and sorted(loaded) == ["CSD_T_A", "CSD_T_B"])
+    for k in ("CSD_T_A", "CSD_T_B", "CSD_T_SHELL"):
+        os.environ.pop(k, None)
+    env.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# 7. landing, sign-up gate, feedback, admin
+# ---------------------------------------------------------------------------
+def test_server(result):
+    print("\n[7] Landing, sign-up and feedback")
+    import shutil
+    import tempfile
+    from bot.accounts import Accounts
+    from bot.server import create_app
+
+    class StubScanner:
+        scan_count = 1
+        paper = None
+        def last_result(self):
+            return result
+
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        app = create_app(Config(), StubScanner(), Accounts(tmp))
+        c = app.test_client()
+
+        r = c.get("/")
+        check("landing page is public", r.status_code == 200 and b"Get access" in r.data)
+        check("dashboard redirects to landing before sign-up",
+              c.get("/app").status_code == 302)
+        check("API refuses before sign-up", c.get("/api/state").status_code == 401)
+        check("a bad email is rejected",
+              c.post("/api/signup", json={"email": "not-an-email"}).status_code == 400)
+        check("a form post (non-JSON) is refused",
+              c.post("/api/signup", data={"email": "a@b.co"}).status_code == 415)
+
+        r = c.post("/api/signup", json={"email": "Trader@Example.com"})
+        check("a valid email signs up", r.status_code == 200 and r.get_json()["new"] is True)
+        check("dashboard opens after sign-up", c.get("/app").status_code == 200)
+        check("signed-in visitors skip the landing", c.get("/").status_code == 302)
+        r = c.post("/api/signup", json={"email": "trader@example.com"})
+        check("signing up twice is not a duplicate", r.get_json()["new"] is False
+              and len(Accounts(tmp).signups()) == 1)
+
+        check("empty feedback is rejected",
+              c.post("/api/feedback", json={}).status_code == 400)
+        r = c.post("/api/feedback", json={"rating": 4, "improve": ["wallet", "bogus"],
+                                          "liked": "search", "message": "more stocks"})
+        check("feedback is accepted", r.status_code == 200)
+        fb = Accounts(tmp).all_feedback()
+        check("feedback is stored with the email and known areas only",
+              len(fb) == 1 and fb[0]["email"] == "trader@example.com"
+              and fb[0]["improve"] == ["wallet"])
+        check("admin page opens from this machine",
+              c.get("/admin/feedback").status_code == 200)
+        check("admin page refuses proxied requests",
+              c.get("/admin/feedback", headers={"X-Forwarded-For": "8.8.8.8"}).status_code == 403)
+        s = Accounts(tmp).summary()
+        check("admin summary counts it", s["signups"] == 1 and s["avg_rating"] == 4.0)
+
+        c.get("/logout")
+        check("signing out locks the dashboard again", c.get("/app").status_code == 302)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +693,7 @@ def main():
     result = test_scan()
     test_dashboard(result)
     test_config_and_gating()
+    test_server(result)
 
     print("\n" + "═" * 74)
     print(f"  {len(PASS)} passed, {len(FAIL)} failed")

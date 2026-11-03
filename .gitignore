@@ -5,3 +5,4 @@ state/*.json
 state/*.jsonl
 dashboard.html
 .DS_Store
+.env

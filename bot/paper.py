@@ -21,6 +21,13 @@ log = logging.getLogger("bot.paper")
 
 TAKER_FEE_PCT = 0.05      # 0.05% per side — typical retail taker fee
 SLIPPAGE_PCT = 0.02       # extra allowance per side
+SUCCESS_PRIOR_PCT = 40.0  # starting success estimate before any trades close
+SUCCESS_PRIOR_TRADES = 10 # the prior counts as this many trades when blending
+
+
+def prior_success() -> dict:
+    """The success estimate for a signal when there is no trade history."""
+    return {"pct": SUCCESS_PRIOR_PCT, "trades": 0, "wins": 0, "basis": "prior"}
 
 
 def _now() -> str:
@@ -172,6 +179,17 @@ class PaperBroker:
             total += (px - pos.entry) * sign * pos.remaining_units
         return total
 
+    @staticmethod
+    def _position_view(pos: PaperPosition, prices: dict[str, float]) -> dict:
+        """A position plus its live mark, so the page can show what it is worth now."""
+        d = pos.to_dict()
+        px = prices.get(pos.symbol)
+        sign = 1.0 if pos.direction == "long" else -1.0
+        d["mark"] = px
+        d["unrealised"] = (round((px - pos.entry) * sign * pos.remaining_units, 4)
+                           if px is not None else None)
+        return d
+
     def equity(self, prices: dict[str, float]) -> float:
         return self.cash + self.unrealised(prices)
 
@@ -262,8 +280,14 @@ class PaperBroker:
                  pos.direction, pos.symbol, price, reason, r_mult)
         return trade
 
-    def mark_to_market(self, prices: dict[str, float], bar_advanced: set[str] | None = None):
-        """Check stops/targets/timeouts against the latest prices."""
+    def mark_to_market(self, prices: dict[str, float],
+                       bar_advanced: set[tuple[str, str]] | None = None):
+        """Check stops/targets/timeouts against the latest prices.
+
+        bar_advanced holds (symbol, timeframe) pairs whose newest bar changed
+        since the last scan; a position only ages when its own entry
+        timeframe prints a new bar, so a daily trade isn't timed out in 5m bars.
+        """
         events = []
         with self._lock:
             for key in list(self.positions.keys()):
@@ -271,7 +295,7 @@ class PaperBroker:
                 px = prices.get(pos.symbol)
                 if px is None:
                     continue
-                if bar_advanced and pos.symbol in bar_advanced:
+                if bar_advanced and (pos.symbol, pos.entry_tf) in bar_advanced:
                     pos.bars_held += 1
 
                 long = pos.direction == "long"
@@ -324,6 +348,21 @@ class PaperBroker:
         return events
 
     # --------------------------------------------------------------- stats
+    def success_chance(self, mode: str) -> dict:
+        """Estimated chance a new signal in this mode closes in profit.
+
+        Starts at SUCCESS_PRIOR_PCT and moves toward the real paper win rate
+        for the mode as trades close, so one lucky trade cannot read as 100%.
+        """
+        with self._lock:
+            trades = [t for t in self.closed if t.mode == mode]
+            wins = sum(1 for t in trades if t.pnl > 0)
+            n = len(trades)
+            pct = ((wins + SUCCESS_PRIOR_PCT / 100.0 * SUCCESS_PRIOR_TRADES)
+                   / (n + SUCCESS_PRIOR_TRADES) * 100.0)
+            return {"pct": round(pct, 1), "trades": n, "wins": wins,
+                    "basis": "paper" if n else "prior"}
+
     def stats(self, prices: dict[str, float] | None = None) -> dict:
         with self._lock:
             prices = prices or {}
@@ -355,12 +394,13 @@ class PaperBroker:
                 "win_rate": round(len(wins) / len(closed) * 100.0, 1) if closed else 0.0,
                 "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
                 "avg_r": round(sum(r_values) / len(r_values), 3) if r_values else 0.0,
+                "avg_pnl": round(sum(t.pnl for t in closed) / len(closed), 4) if closed else None,
                 "best_r": round(max(r_values), 2) if r_values else 0.0,
                 "worst_r": round(min(r_values), 2) if r_values else 0.0,
                 "total_fees": round(sum(t.fees for t in closed), 2),
                 "max_drawdown_pct": round(max_dd, 2),
                 "halted_reason": self.halted_reason,
-                "positions": [p.to_dict() for p in self.positions.values()],
+                "positions": [self._position_view(p, prices) for p in self.positions.values()],
                 "recent_trades": [t.to_dict() for t in closed[-15:]][::-1],
                 "equity_curve_points": self.equity_curve[-180:],
             }

@@ -141,7 +141,11 @@ class LiveTrader:
             return reject("risk kill-switch active")
         if sig.action != "enter":
             return reject(f"signal action is '{sig.action}', not 'enter'")
-        if notional > self.risk.max_notional_per_trade:
+        # on spot a "sell" just dumps coins you already hold; it can't open a short
+        if sig.direction == "short" and self.cfg.market_type not in ("swap", "future"):
+            return reject("short signals need market_type swap; spot can only buy")
+        # sizing caps notional at exactly the limit; allow float rounding
+        if notional > self.risk.max_notional_per_trade * (1 + 1e-9):
             return reject(
                 f"notional {notional:.2f} exceeds cap {self.risk.max_notional_per_trade:.2f}"
             )

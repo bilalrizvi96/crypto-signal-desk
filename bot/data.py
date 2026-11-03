@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from .catalog import AssetCatalog
 from .config import UniverseCfg
 
 log = logging.getLogger("bot.data")
@@ -35,6 +36,8 @@ class SymbolInfo:
     rank: int
     bucket: str          # "large" or "small"
     spread_pct: float
+    name: str = ""
+    asset_class: str = "crypto"   # "crypto" | "stock" | "commodity" | "stablecoin"
 
 
 class MarketData:
@@ -46,6 +49,7 @@ class MarketData:
         self._ohlcv_cache: dict[tuple[str, str], tuple[float, pd.DataFrame]] = {}
         self._tickers_cache: tuple[float, dict] | None = None
         self.exchange = self._build_exchange()
+        self.catalog = AssetCatalog(cfg.exchange)
 
     # ---------------------------------------------------------------- setup
     def _build_exchange(self):
@@ -78,13 +82,13 @@ class MarketData:
             self._tickers_cache = (now, tickers)
         return tickers
 
-    def build_universe(self) -> list[SymbolInfo]:
-        """Rank tradable pairs by 24h quote volume, then take a large-cap band
-        and a small-cap band so the scan covers both ends of the market."""
+    def market_rows(self, include_stable: bool = False) -> list[dict]:
+        """Every tradable pair in the configured quote, ranked by 24h volume."""
         self.load_markets()
         tickers = self.fetch_tickers()
         cfg = self.cfg
         want_swap = cfg.market_type in ("swap", "future")
+        assets = self.catalog.assets()
 
         rows: list[dict] = []
         for symbol, t in tickers.items():
@@ -109,6 +113,11 @@ class MarketData:
             if not qv or not last:
                 continue
 
+            # stable/stable pairs barely move, so their "signals" are noise
+            asset = assets.get(base) or {}
+            if asset.get("asset_class") == "stablecoin" and not include_stable:
+                continue
+
             bid, ask = t.get("bid"), t.get("ask")
             spread = ((ask - bid) / ask * 100.0) if (bid and ask and ask > 0) else 0.0
 
@@ -119,11 +128,20 @@ class MarketData:
                 "last": float(last),
                 "change_24h": float(t.get("percentage") or 0.0),
                 "spread_pct": float(spread),
+                "name": asset.get("name", ""),
+                "asset_class": asset.get("asset_class", "crypto"),
             })
 
         rows.sort(key=lambda r: r["quote_volume"], reverse=True)
         for i, r in enumerate(rows):
             r["rank"] = i + 1
+        return rows
+
+    def build_universe(self) -> list[SymbolInfo]:
+        """Rank tradable pairs by 24h quote volume, then take a large-cap band
+        and a small-cap band so the scan covers both ends of the market."""
+        cfg = self.cfg
+        rows = self.market_rows()
 
         def liquid(r: dict) -> bool:
             if r["quote_volume"] < cfg.min_quote_volume_usd:
@@ -155,6 +173,40 @@ class MarketData:
                  sum(1 for s in out if s.bucket == "large"),
                  sum(1 for s in out if s.bucket == "small"))
         return out
+
+    def search(self, query: str, limit: int = 12) -> list[dict]:
+        """Match pairs by ticker or full name ("btc", "nvidia", "apple").
+
+        Exact ticker first, then ticker prefix, then name match; volume
+        breaks ties so the liquid pair wins over a lookalike.
+        """
+        q = query.strip().upper()
+        if not q:
+            return []
+        hits = []
+        for r in self.market_rows():
+            base, name = r["base"].upper(), r["name"].upper()
+            if base == q:
+                tier = 0
+            elif base.startswith(q):
+                tier = 1
+            elif q in name:
+                tier = 2
+            elif q in base:
+                tier = 3
+            else:
+                continue
+            hits.append((tier, -r["quote_volume"], r))
+        hits.sort(key=lambda h: (h[0], h[1]))
+        return [h[2] for h in hits[:limit]]
+
+    def symbol_info(self, symbol: str) -> SymbolInfo | None:
+        """A SymbolInfo for any tradable pair, scanned universe or not."""
+        for r in self.market_rows():
+            if r["symbol"] == symbol:
+                bucket = "large" if r["rank"] <= self.cfg.large_cap_top else "small"
+                return SymbolInfo(bucket=bucket, **r)
+        return None
 
     # ---------------------------------------------------------------- OHLCV
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 400,
