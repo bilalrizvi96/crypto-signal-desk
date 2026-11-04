@@ -29,3 +29,7 @@ services:
         generateValue: true
       - key: DATABASE_URL          # paste your free Neon/Supabase Postgres URL
         sync: false
+      # optional: AI trade review for the site's practice account (billed per
+      # review, capped by ai.max_reviews_per_day); without it no practice trade opens
+      - key: ANTHROPIC_API_KEY
+        sync: false

@@ -122,6 +122,21 @@ live:
   api_secret_env: EXCHANGE_API_SECRET
   confirm_phrase_env: LIVE_CONFIRM
   confirm_phrase: I_UNDERSTAND_THE_RISK
+  modes: [swing, position]   # scalp is paper-only for now
+
+# ── AI trade review ──────────────────────────────────────────────────────────
+#  Claude researches each setup (desk data + live web search) and must say
+#  "take" before a paper or exchange trade opens. Needs ANTHROPIC_API_KEY in
+#  .env. Fail-closed: no key, an error or a spent budget skips the trade.
+ai:
+  enabled: true
+  model: claude-opus-5-5
+  effort: high
+  web_search: true
+  max_searches: 5            # per review
+  max_reviews_per_day: 30    # cost cap — roughly $0.15–0.30 per review with search
+  min_confidence: 60         # a "take" below this counts as skip
+  cache_minutes: 45          # the same setup is not re-reviewed within this window
 
 # ── Dashboard server ─────────────────────────────────────────────────────────
 server:

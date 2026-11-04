@@ -8,6 +8,7 @@ strategy, paper broker, live gating and dashboard renderer all execute.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -403,6 +404,7 @@ def test_scan():
     cfg.news.enabled = False       # no network in this harness
     cfg.paper_enabled = True
     cfg.live.enabled = False
+    cfg.ai.enabled = False         # the AI gate has its own section below
 
     real_md = scanner_mod.MarketData
     scanner_mod.MarketData = FakeMarketData
@@ -607,13 +609,19 @@ def test_config_and_gating():
 
         from types import SimpleNamespace
         trader2.log_path = Path("/tmp/csd_test_orders.jsonl")
-        short = SimpleNamespace(symbol="SOL/USDT", direction="short", action="enter", mode="scalp",
+        short = SimpleNamespace(symbol="SOL/USDT", direction="short", action="enter", mode="swing",
                                 position_size_units=0.1, entry=100.0, stop=101.0,
                                 targets=[99.0, 98.0])
         rec = trader2.submit(short)
         check("spot never sends a short as a sell",
               trader2.cfg.market_type == "spot" and rec.status == "rejected" and "short" in rec.reason,
               rec.reason[:60])
+        scalp_long = SimpleNamespace(symbol="BTC/USDT", direction="long", action="enter",
+                                     mode="scalp", position_size_units=0.001, entry=100.0,
+                                     stop=99.0, targets=[101.0, 102.0])
+        rec2 = trader2.submit(scalp_long)
+        check("scalp trades never reach the exchange", rec2.status == "rejected"
+              and "paper-only" in rec2.reason and trader2.wants(scalp_long) is False, rec2.reason[:60])
         trader2.log_path.unlink(missing_ok=True)
     finally:
         LiveTrader._init_exchange = real_init
@@ -698,6 +706,155 @@ def test_server(result):
 
 
 # ---------------------------------------------------------------------------
+# 7b. AI trade review (fake Claude client: no network, no cost)
+# ---------------------------------------------------------------------------
+class FakeClaude:
+    """Mimics client.beta.messages.create; scripted replies, records calls."""
+    def __init__(self, decision="take", confidence=80, script=None, fail=False):
+        from types import SimpleNamespace as NS
+        self.NS, self.calls, self.fail = NS, [], fail
+        self.script = list(script or [])
+        self.decision, self.confidence = decision, confidence
+        self.beta = NS(messages=NS(create=self._create))
+
+    def _create(self, **kw):
+        self.calls.append(kw)
+        if self.fail:
+            raise RuntimeError("simulated API outage")
+        stop = self.script.pop(0) if self.script else "end_turn"
+        NS = self.NS
+        usage = NS(input_tokens=6000, output_tokens=3000, cache_creation_input_tokens=0,
+                   cache_read_input_tokens=0, server_tool_use=NS(web_search_requests=2))
+        if stop == "pause_turn":
+            return NS(stop_reason="pause_turn", content=[NS(type="server_tool_use")], usage=usage)
+        if stop == "refusal":
+            return NS(stop_reason="refusal", content=[], usage=usage)
+        body = {"decision": self.decision, "confidence": self.confidence,
+                "summary": "test verdict", "reasons_for": ["trend aligned"],
+                "reasons_against": ["fees"], "watch_for": "a close below the stop",
+                "key_news": [{"title": "Example", "url": "https://example.com/n", "impact": "neutral"}]}
+        return NS(stop_reason="end_turn", content=[NS(type="text", text=json.dumps(body))], usage=usage)
+
+
+def _ai_scanner(fake, tmp, **ai_overrides):
+    import bot.scanner as scanner_mod
+    from bot.ai_review import AIReviewer
+    cfg = Config()
+    cfg.news.enabled = False
+    cfg.live.enabled = False
+    for k, v in ai_overrides.items():
+        setattr(cfg.ai, k, v)
+    real_md = scanner_mod.MarketData
+    scanner_mod.MarketData = FakeMarketData
+    try:
+        sc = scanner_mod.Scanner(cfg)
+    finally:
+        scanner_mod.MarketData = real_md
+    sc.paper.path = tmp / "paper.json"
+    sc.paper.reset()
+    sc.ai = AIReviewer(cfg.ai, state_dir=tmp, client=fake)
+    return sc
+
+
+def _wait_reviews(sc, timeout=20):
+    import time as _t
+    end = _t.time() + timeout
+    while sc.ai.stats()["pending"] and _t.time() < end:
+        _t.sleep(0.05)
+
+
+def test_ai_review():
+    print("\n[7b] AI trade review (fake Claude, no network)")
+    import os
+    import shutil
+    import tempfile
+    from bot.ai_review import AIReviewer, _parse_verdict
+    saved_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        # approval: the first scan only queues reviews, the next one trades
+        fake = FakeClaude("take", 80)
+        sc = _ai_scanner(fake, tmp)
+        r1 = sc.scan()
+        check("first scan opens nothing while reviews run", r1["paper"]["open_positions"] == 0)
+        _wait_reviews(sc)
+        check("each tradable entry was reviewed once", len(fake.calls) == r1["counts"]["enter"]
+              and len(fake.calls) >= 1, f"{len(fake.calls)} reviews, {r1['counts']['enter']} entries")
+        kw = fake.calls[0]
+        check("review uses Opus 5.5 with adaptive thinking and fallbacks",
+              kw["model"] == "claude-opus-5-5" and kw["thinking"] == {"type": "adaptive"}
+              and kw["fallbacks"] == "default" and "server-side-fallback-2026-07-01" in kw["betas"])
+        check("review asks for a schema-checked verdict and can search the web",
+              kw["output_config"]["format"]["type"] == "json_schema"
+              and kw["tools"][0]["type"] == "web_search_20260209")
+        check("review sees the desk's track record", "desk_track_record_this_mode"
+              in kw["messages"][0]["content"])
+        r2 = sc.scan()
+        pos = r2["paper"]["positions"]
+        check("approved entries open on the next scan", len(pos) >= 1, f"{len(pos)} open")
+        check("positions remember the AI's confidence", all(p["ai_confidence"] == 80 for p in pos))
+        sigs = [s for m in r2["signals"].values() for s in m if s["action"] == "enter"]
+        check("cards carry the approved verdict", any(s["ai"].get("state") == "approved" for s in sigs))
+        check("a cached verdict is not paid for twice", len(fake.calls) == r1["counts"]["enter"])
+        st = r2["ai"]
+        check("spend is estimated and counted", st["reviews_today"] == len(fake.calls)
+              and st["spend_today_usd"] > 0, f"${st['spend_today_usd']}")
+        check("reviews are logged", (tmp / "ai_reviews.jsonl").exists())
+        check("the daily count survives a restart",
+              AIReviewer(sc.cfg.ai, state_dir=tmp, client=fake).stats()["reviews_today"] == len(fake.calls))
+
+        # skip and low confidence never trade
+        for label, fk in (("a skip verdict opens nothing", FakeClaude("skip", 85)),
+                          ("a low-confidence take opens nothing", FakeClaude("take", 40)),
+                          ("an API failure opens nothing (fail-closed)", FakeClaude(fail=True)),
+                          ("a refusal opens nothing", FakeClaude(script=["refusal"] * 50))):
+            t2 = Path(tempfile.mkdtemp())
+            sc2 = _ai_scanner(fk, t2)
+            sc2.scan(); _wait_reviews(sc2)
+            check(label, sc2.scan()["paper"]["open_positions"] == 0)
+            shutil.rmtree(t2, ignore_errors=True)
+
+        # no key: nothing is reviewed and nothing trades
+        t3 = Path(tempfile.mkdtemp())
+        sc3 = _ai_scanner(None, t3)
+        r3 = sc3.scan()
+        states = {s["ai"].get("state") for m in r3["signals"].values() for s in m if s["action"] == "enter"}
+        check("without an API key entries wait and nothing opens",
+              r3["paper"]["open_positions"] == 0 and states == {"unavailable"}, str(states))
+        shutil.rmtree(t3, ignore_errors=True)
+
+        # the daily cap holds
+        t4 = Path(tempfile.mkdtemp())
+        fk4 = FakeClaude("take", 80)
+        sc4 = _ai_scanner(fk4, t4, max_reviews_per_day=1)
+        sc4.scan(); _wait_reviews(sc4); sc4.scan(); _wait_reviews(sc4)
+        check("the daily review cap is never exceeded", len(fk4.calls) == 1, f"{len(fk4.calls)} calls")
+        shutil.rmtree(t4, ignore_errors=True)
+
+        # pause_turn resumes the same turn
+        t5 = Path(tempfile.mkdtemp())
+        fk5 = FakeClaude("take", 75, script=["pause_turn"])
+        rv = AIReviewer(Config().ai, state_dir=t5, client=fk5)
+        from types import SimpleNamespace as NS
+        from bot.ai_review import CONTEXT_FIELDS
+        sig = NS(**{k: None for k in CONTEXT_FIELDS})
+        sig.symbol, sig.mode, sig.direction = "PUMP/USDT", "swing", "long"
+        sig.entry, sig.stop, sig.targets = 1.0, 0.9, [1.1, 1.2]
+        out = rv.review_now(sig, {})
+        check("a paused search turn is resumed, not dropped",
+              len(fk5.calls) == 2 and out["state"] == "approved"
+              and fk5.calls[1]["messages"][-1]["role"] == "assistant", f"{len(fk5.calls)} calls")
+        shutil.rmtree(t5, ignore_errors=True)
+
+        check("verdict JSON is read even when wrapped in prose",
+              _parse_verdict('Here it is: {"decision": "skip", "confidence": 7}')["decision"] == "skip")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if saved_key is not None:
+            os.environ["ANTHROPIC_API_KEY"] = saved_key
+
+
+# ---------------------------------------------------------------------------
 # 8. Postgres storage (only when TEST_DATABASE_URL points at a scratch database)
 # ---------------------------------------------------------------------------
 def test_postgres():
@@ -745,6 +902,7 @@ def main():
     test_dashboard(result)
     test_config_and_gating()
     test_server(result)
+    test_ai_review()
     test_postgres()
 
     print("\n" + "═" * 74)

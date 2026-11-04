@@ -13,6 +13,7 @@ import pandas as pd
 from . import indicators as ta
 from .config import Config
 from .data import MarketData, SymbolInfo, tf_seconds
+from .ai_review import AIReviewer
 from .live import LiveTrader
 from .news import NewsEngine
 from .paper import PaperBroker, prior_success
@@ -49,6 +50,7 @@ class Scanner:
         self.news = NewsEngine(cfg.news)
         self.paper = PaperBroker(cfg.risk) if cfg.paper_enabled else None
         self.live = LiveTrader(cfg.live, cfg.risk) if cfg.live.enabled else None
+        self.ai = AIReviewer(cfg.ai) if cfg.ai.enabled else None
         self._lock = threading.RLock()
         self._last_result: dict | None = None
         self._universe: list[SymbolInfo] = []
@@ -208,22 +210,26 @@ class Scanner:
         paper_events = []
         if self.paper:
             paper_events = self.paper.mark_to_market(prices, bar_advanced)
-            for sig in sorted(all_signals, key=lambda s: -abs(s.score)):
-                if sig.action == "enter":
-                    self.paper.open_from_signal(sig)
+        if self.live:
+            self.live.sync_positions()
+        # success estimate after mark_to_market so trades closed this scan count
+        self._attach_success(all_signals)
+
+        # every entry goes through the AI review first; only approved ones trade
+        entries = sorted((s for s in all_signals if s.action == "enter"),
+                         key=lambda s: -abs(s.score))
+        approved = self._ai_gate(entries)
+
+        if self.paper:
+            for sig in approved:
+                self.paper.open_from_signal(sig)
             self.paper.save()
 
         live_records = []
         if self.live:
-            self.live.sync_positions()
             halted = bool(self.paper and self.paper.halted_reason)
-            for sig in sorted(all_signals, key=lambda s: -abs(s.score)):
-                if sig.action == "enter":
-                    live_records.append(self.live.submit(sig, halted=halted).to_dict())
-
-        # ---- success estimate ----------------------------------------------
-        # computed after mark_to_market so trades closed this scan count
-        self._attach_success(all_signals)
+            for sig in approved:
+                live_records.append(self.live.submit(sig, halted=halted).to_dict())
 
         best_scalp = sorted((s for s in all_signals if s.mode == "scalp" and s.scalp_fit),
                             key=lambda s: -s.scalp_fit["score"])[:5]
@@ -270,6 +276,7 @@ class Scanner:
             "news": [i.to_dict() for i in self.news.items()[:30]] if self.cfg.news.enabled else [],
             "news_errors": self.news.errors() if self.cfg.news.enabled else [],
             "paper": self.paper.stats(prices) if self.paper else None,
+            "ai": self.ai.stats() if self.ai else {"enabled": False},
             "paper_events": [
                 {"type": kind, "data": payload.to_dict() if hasattr(payload, "to_dict") else payload}
                 for kind, payload in paper_events
@@ -299,6 +306,60 @@ class Scanner:
                  result["counts"]["enter"], result["counts"]["watch"])
         return result
 
+    def _ai_gate(self, entries: list) -> list:
+        """Queue reviews for entries that could actually trade, and return the
+        ones the AI has already approved. A new setup trades on a later scan,
+        once its background review lands."""
+        if not self.ai:
+            return entries
+        approved = []
+        for sig in entries:
+            could_trade = ((self.paper and self.paper.can_open(sig))
+                           or (self.live and self.live.wants(sig)))
+            verdict = self.ai.verdict_for(sig)
+            if verdict is None and could_trade:
+                self.ai.request(sig, self._ai_context(sig))
+            sig.ai = self.ai.status_for(sig)
+            if self.ai.approves(verdict):
+                approved.append(sig)
+        return approved
+
+    def _ai_context(self, sig) -> dict:
+        """What the reviewer gets beyond the signal itself."""
+        record = {}
+        if self.paper:
+            trades = [t for t in self.paper.closed if t.mode == sig.mode]
+            record = {
+                "closed_trades": len(trades),
+                "wins": sum(1 for t in trades if t.pnl > 0),
+                "avg_pnl_usd": round(sum(t.pnl for t in trades) / len(trades), 3) if trades else None,
+                "last_10": [{"symbol": t.symbol, "direction": t.direction, "exit": t.reason,
+                             "r_multiple": t.r_multiple, "bars_held": t.bars_held}
+                            for t in trades[-10:]],
+            }
+        return {
+            "account": {"market_type": self.cfg.universe.market_type,
+                        "exchange": self.cfg.universe.exchange,
+                        "round_trip_cost_pct": 0.14,
+                        "risk_per_trade_pct": self.cfg.risk.risk_per_trade_pct},
+            "market_mood": self.news.market_mood() if self.cfg.news.enabled else {},
+            "desk_track_record_this_mode": record,
+        }
+
+    def ai_research(self, symbol: str, mode: str) -> dict:
+        """On-demand review from the detail page. Counts toward the daily cap."""
+        if not self.ai:
+            return {"state": "unavailable", "reason": "AI review is off in config"}
+        info = self.data.symbol_info(symbol)
+        if info is None:
+            return {"state": "error", "reason": f"{symbol} is not tradable"}
+        signals, _ = self._analyse_symbol(info)
+        self._attach_success(signals)
+        sig = next((s for s in signals if s.mode == mode), None)
+        if sig is None:
+            return {"state": "error", "reason": f"no {mode} analysis for {symbol}"}
+        return self.ai.review_now(sig, self._ai_context(sig))
+
     def _attach_success(self, signals: list):
         # computed after mark_to_market so trades closed this scan count
         chance = {mode: (self.paper.success_chance(mode) if self.paper else prior_success())
@@ -326,6 +387,9 @@ class Scanner:
         if not signals:
             return {"symbol": symbol, "error": "not enough price history to analyse"}
         self._attach_success(signals)
+        if self.ai:
+            for sig in signals:
+                sig.ai = self.ai.status_for(sig)
         scalp = next((s for s in signals if s.mode == "scalp"), None)
         return {
             "symbol": info.symbol, "base": info.base, "name": info.name,

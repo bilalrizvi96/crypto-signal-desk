@@ -167,6 +167,27 @@ def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) 
             return jsonify({"symbol": symbol, "error": str(exc)}), 502
         return jsonify(result), (404 if result.get("error") else 200)
 
+    @app.get("/api/ai/status")
+    def api_ai_status():
+        return jsonify(scanner.ai.stats() if scanner.ai else {"enabled": False})
+
+    @app.post("/api/ai/research")
+    def api_ai_research():
+        """Run an AI review of one pair now (detail page). Takes up to a couple of
+        minutes with web search, and counts toward the daily review cap."""
+        if not request.is_json:
+            return jsonify({"state": "error", "reason": "expected JSON"}), 415
+        data = request.get_json(silent=True) or {}
+        symbol = str(data.get("symbol") or "").strip().upper()[:30]
+        mode = str(data.get("mode") or "").strip().lower()
+        if not symbol or mode not in ("scalp", "swing", "position"):
+            return jsonify({"state": "error", "reason": "symbol and mode are required"}), 400
+        try:
+            return jsonify(scanner.ai_research(symbol, mode))
+        except Exception as exc:
+            log.warning("AI research failed for %s: %s", symbol, exc)
+            return jsonify({"state": "error", "reason": str(exc)[:200]}), 502
+
     @app.post("/api/paper/reset")
     def api_paper_reset():
         if not scanner.paper:

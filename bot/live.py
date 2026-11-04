@@ -126,6 +126,15 @@ class LiveTrader:
             with open(self.log_path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec.to_dict()) + "\n")
 
+    def wants(self, sig) -> bool:
+        """Would submit() try to place this? Used to decide whether an AI review is worth paying for."""
+        spot = self.cfg.market_type not in ("swap", "future")
+        with self._lock:
+            return (sig.action == "enter" and sig.mode in self.cfg.modes
+                    and not (spot and sig.direction == "short")
+                    and sig.symbol not in self.open_symbols
+                    and len(self.open_symbols) < self.risk.max_open_positions)
+
     def submit(self, sig, halted: bool = False) -> OrderRecord:
         """Place (or simulate) an entry for a fired signal."""
         now = datetime.now(timezone.utc).isoformat()
@@ -144,6 +153,8 @@ class LiveTrader:
             return reject("risk kill-switch active")
         if sig.action != "enter":
             return reject(f"signal action is '{sig.action}', not 'enter'")
+        if sig.mode not in self.cfg.modes:
+            return reject(f"{sig.mode} trades are paper-only (live.modes: {', '.join(self.cfg.modes)})")
         # on spot a "sell" just dumps coins you already hold; it can't open a short
         if sig.direction == "short" and self.cfg.market_type not in ("swap", "future"):
             return reject("short signals need market_type swap; spot can only buy")

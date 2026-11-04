@@ -96,6 +96,25 @@ class LiveCfg:
     order_type: str = "market"
     confirm_phrase_env: str = "LIVE_CONFIRM"
     confirm_phrase: str = "I_UNDERSTAND_THE_RISK"
+    # modes allowed to send exchange orders; scalp stays paper-only until it
+    # proves itself (5 wins in its first 24 practice trades)
+    modes: list[str] = field(default_factory=lambda: ["swing", "position"])
+
+
+@dataclass
+class AICfg:
+    """Claude reviews every trade before it opens. Fail-closed: no key, an
+    error, a refusal or a spent daily budget means the trade is skipped."""
+    enabled: bool = True
+    model: str = "claude-opus-5-5"
+    effort: str = "high"
+    web_search: bool = True
+    max_searches: int = 5              # web searches per review
+    max_reviews_per_day: int = 30      # hard cap on paid reviews (UTC day)
+    min_confidence: int = 60           # "take" below this is treated as skip
+    cache_minutes: int = 45            # reuse a verdict for the same setup
+    workers: int = 2                   # reviews run in the background, in parallel
+    api_key_env: str = "ANTHROPIC_API_KEY"
 
 
 @dataclass
@@ -130,6 +149,7 @@ class Config:
     news: NewsCfg = field(default_factory=NewsCfg)
     risk: RiskCfg = field(default_factory=RiskCfg)
     live: LiveCfg = field(default_factory=LiveCfg)
+    ai: AICfg = field(default_factory=AICfg)
     server: ServerCfg = field(default_factory=ServerCfg)
     paper_enabled: bool = True
 

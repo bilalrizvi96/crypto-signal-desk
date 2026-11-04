@@ -71,6 +71,23 @@ PAGE = r"""<!doctype html>
     text-transform:uppercase;letter-spacing:.06em}
   .mood-m{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
   .mood-m a{color:var(--ink-2)}
+  .ai-box{border-radius:8px;padding:8px 10px;font-size:12.5px;border:1px solid var(--border);
+    background:var(--surface-2)}
+  .ai-box .ai-h{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:640}
+  .ai-box .ai-s{color:var(--ink-2);font-size:12px;margin-top:3px;line-height:1.4}
+  .ai-box.approved{border-color:rgba(12,163,12,.5);background:rgba(12,163,12,.09)}
+  .ai-box.approved .ai-h{color:#4ede4e}
+  .ai-box.rejected,.ai-box.error{border-color:rgba(208,59,59,.4);background:rgba(208,59,59,.08)}
+  .ai-box.rejected .ai-h,.ai-box.error .ai-h{color:#ff9c9c}
+  .ai-box.reviewing .ai-h{color:#8fc1ff}
+  .ai-box.unavailable,.ai-box.budget{color:var(--muted)}
+  .ai-box details{margin-top:5px} .ai-box summary{cursor:pointer;color:var(--ink-2);font-size:11.5px}
+  .ai-box ul{margin:4px 0 2px;padding-left:16px} .ai-box li{margin:2px 0;color:var(--ink-2);font-size:11.5px}
+  .ai-box .ai-lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-top:5px}
+  .ai-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#8fc1ff;
+    margin-right:5px;animation:aipulse 1.2s ease-in-out infinite}
+  @keyframes aipulse{50%{opacity:.25}}
+  @media (prefers-reduced-motion:reduce){.ai-dot{animation:none}}
   .live-badge{font-size:12px;font-weight:650;padding:5px 10px;border-radius:999px;white-space:nowrap;cursor:help}
   .live-badge.test{color:#ffce5e;background:rgba(250,178,25,.13);border:1px solid rgba(250,178,25,.45)}
   .live-badge.real{color:#fff;background:#d03b3b;border:1px solid #ff8080}
@@ -582,6 +599,14 @@ function renderTiles(){
     `<span class="up">↑${c.long||0}</span> <span style="color:var(--muted)">/</span> <span class="down">↓${c.short||0}</span>`,
     "of the firing signals"));
   t.push(moodTile(mood));
+  const ai=state.ai||{};
+  if(ai.enabled){
+    t.push(tile("AI reviews today",
+      ai.available?`${ai.reviews_today||0}<span style="font-size:15px;color:var(--muted)"> / ${ai.cap}</span>`
+                  :`<span style="font-size:18px;color:var(--muted)">off</span>`,
+      ai.available?`≈ $${(ai.spend_today_usd||0).toFixed(2)} today · ${ai.web_search?"with web search":"desk data only"}`
+                  :esc(ai.reason||"")));
+  }
   if(paper){
     const r=paper.total_return_pct||0;
     t.push(tile("Practice balance", fmtUsd(paper.equity),
@@ -768,6 +793,7 @@ function card(s, exchange){
     </div>
 
     ${chance}
+    ${aiBlock(s)}
 
     <table class="lv">
       <tr><td>Entry</td><td>${fmtPrice(s.entry)}</td></tr>
@@ -794,6 +820,35 @@ function card(s, exchange){
       ${votes}
     </details>
   </article>`;
+}
+
+/* ---------- AI review ---------- */
+function aiBlock(s, opts){
+  const a=s.ai||{}; opts=opts||{};
+  if(!a.state || (a.state==="none" && s.action!=="enter")) return "";
+  const conf=a.confidence!=null?` · ${a.confidence}%`:"";
+  const list=(xs)=>(xs||[]).length?`<ul>${xs.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:"";
+  const news=(a.key_news||[]).length?`<div class="ai-lbl">News it used</div><ul>${a.key_news.map(n=>
+    `<li>${n.impact==="bullish"?"▲":(n.impact==="bearish"?"▼":"•")} ${/^https?:\/\//.test(n.url||"")
+      ?`<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>`:esc(n.title)}</li>`).join("")}</ul>`:"";
+  const details=(a.reasons_for||a.reasons_against)?`<details${opts.open?" open":""}><summary>Why — the AI's research</summary>
+      ${(a.reasons_for||[]).length?`<div class="ai-lbl">For</div>${list(a.reasons_for)}`:""}
+      ${(a.reasons_against||[]).length?`<div class="ai-lbl">Against</div>${list(a.reasons_against)}`:""}
+      ${news}${a.watch_for?`<div class="ai-lbl">Watch for</div><div class="ai-s">${esc(a.watch_for)}</div>`:""}
+      <div class="ai-s" style="margin-top:5px;color:var(--muted)">${esc(a.model||"")} · ${a.seconds||"?"}s · ≈$${(a.cost_usd||0).toFixed(3)}</div>
+    </details>`:"";
+  const head={
+    approved:   ["✓ AI approved this trade"+conf, a.summary],
+    rejected:   ["✗ AI says skip"+conf, a.summary],
+    error:      ["✗ AI review failed — trade skipped", a.error||a.summary],
+    reviewing:  [`<span class="ai-dot" aria-hidden="true"></span>AI is researching this trade…`, "It checks live news and the charts; usually under two minutes."],
+    unavailable:["AI review is off", (a.reason||"")+". Trades wait for AI approval, so none will open."],
+    budget:     ["Daily AI review limit reached", "No new trades open until tomorrow (UTC)."],
+    none:       ["Not reviewed", "Already holding this or no free trade slot, so no review was needed."],
+  }[a.state]||["AI", ""];
+  return `<div class="ai-box ${esc(a.state)}" role="status"><div class="ai-h"><span>${head[0]}</span></div>
+    ${head[1]?`<div class="ai-s">${esc(head[1])}</div>`:""}
+    ${details}</div>`;
 }
 
 /* ---------- best for scalping ---------- */
@@ -884,6 +939,18 @@ function renderAnalysed(){
     el.innerHTML=detailView(a, close);
     drawPlanChart();
     el.querySelectorAll(".d-tabs button").forEach(b=>b.onclick=()=>{ detailMode=b.dataset.mode; renderAnalysed(); });
+    const aiBtn=document.getElementById("aiResearchBtn");
+    if(aiBtn) aiBtn.onclick=async()=>{
+      const sig=(analysed.signals||[]).find(x=>x.mode===aiBtn.dataset.mode);
+      if(!sig) return;
+      sig.ai={state:"reviewing"}; renderAnalysed();
+      try{
+        const r=await fetch("/api/ai/research",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({symbol:analysed.symbol, mode:sig.mode})});
+        sig.ai=await r.json();
+      }catch(e){ sig.ai={state:"error", error:"request failed — is the server still running?"}; }
+      renderAnalysed();
+    };
   }
   document.getElementById("closeResult").onclick=()=>{ analysed=null; sIn.value=""; renderAnalysed(); };
 }
@@ -1120,6 +1187,13 @@ function detailView(a, close){
       <div class="d-panel"><h3>The plan <span class="c">${esc(s.timeframes.entry)}→${esc(s.timeframes.confirm)}→${esc(s.timeframes.bias)}</span></h3>
         ${planRows}${walletRows}</div>
     </div>
+    <div class="d-panel" style="margin-bottom:14px"><h3>AI research <span class="c">${esc(modeLabel(s.mode))} trade</span></h3>
+      ${s.ai&&s.ai.state&&s.ai.state!=="none"?aiBlock(s,{open:true})
+        :`<div class="ai-s" style="font-size:12.5px;color:var(--ink-2);margin-bottom:8px">Ask Claude to research this ${esc(modeLabel(s.mode)).toLowerCase()} setup:
+            live news, the five timeframes, fees against the stop and the desk's record. It says take or skip, with reasons.</div>
+          <button class="primary" id="aiResearchBtn" data-mode="${esc(s.mode)}">Research this trade with AI</button>
+          <span class="pp-sub" style="margin-left:8px">uses one of today's reviews · ~$0.15–0.30</span>`}
+    </div>
     <div class="d-grid">
       <div class="d-panel d-votes"><h3>Why this signal <span class="c">${(s.votes||[]).length} indicator reads · strongest first</span></h3>
         ${votes||'<div class="empty">No indicator reads.</div>'}</div>
@@ -1277,6 +1351,9 @@ function renderPaper(){
       <div><b class="${avg==null?"":(avg>=0?"up":"down")}">${avg==null?"–":(avg>=0?"+":"")+fmtUsd(avg)}</b><span>average per trade</span></div>
       <div><b>${fmtUsd(p.total_fees)}</b><span>fees paid</span></div>
     </div>
+    ${state.ai&&state.ai.enabled?`<div class="pp-sub" style="margin:6px 0 2px">${p.ai_closed
+      ?`AI-approved trades: <strong style="color:var(--ink)">${p.ai_wins} of ${p.ai_closed} won</strong>`
+      :"No AI-approved trade has finished yet. This line will show whether the AI's picks do better."}</div>`:""}
     ${n&&!wins?`<div class="pp-note">No winning trades yet. That's what practice money is for:
       it shows how the signals really perform before anyone risks savings on them.</div>`:""}
     ${p.halted_reason?`<div class="warn block" style="margin-top:9px"><span>⛔</span><div>Paused for today:

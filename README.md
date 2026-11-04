@@ -138,6 +138,26 @@ For every signal:
 Signals with less than 0.8R to the first target are downgraded to "watch" — the
 setup may be real but you are not being paid enough to take it yet.
 
+### 6. Has Claude research every trade first
+
+Before anything opens, paper or exchange, Claude Opus 5.5 reviews the setup.
+It gets the five-timeframe read, every indicator vote, the levels, the
+headlines, the fees against the stop, and the desk's own recent record for
+that mode. It searches the live web for news on the asset and for scheduled
+macro events, then returns **take or skip** with a confidence score, its
+reasons for and against, and the news it relied on. Each card shows the verdict.
+
+- A trade opens only on **take at 60% confidence or more** (`ai.min_confidence`).
+- **Fail-closed:** no `ANTHROPIC_API_KEY`, an API error, a refusal or a spent
+  daily budget means the trade is skipped, never taken blindly.
+- Reviews run in the background, so a new setup trades on the next scan
+  once its review lands. A verdict is reused for 45 minutes.
+- **Cost:** roughly $0.15–0.30 per review with web search, capped at 30 reviews
+  a day (`ai.max_reviews_per_day`). The dashboard shows the day's estimate;
+  your Anthropic console has the real bill.
+- The practice panel tracks how AI-approved trades actually do. That's how you
+  find out whether the reviews help. A second opinion is not a guarantee.
+
 ### 6. Trades it on paper
 
 Every fired signal opens a virtual position. Half comes off at target 1 and the

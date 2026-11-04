@@ -6,3 +6,4 @@ requests>=2.31.0
 feedparser>=6.0.10
 PyYAML>=6.0
 pg8000>=1.31
+anthropic>=2.4

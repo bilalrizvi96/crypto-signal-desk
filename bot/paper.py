@@ -58,6 +58,7 @@ class PaperPosition:
     tp1_hit: bool = False
     breakeven: bool = False
     note: str = ""
+    ai_confidence: int | None = None   # set when an AI review approved the entry
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -82,6 +83,7 @@ class ClosedTrade:
     bars_held: int
     reason: str
     score: float
+    ai_confidence: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -194,20 +196,22 @@ class PaperBroker:
         return self.cash + self.unrealised(prices)
 
     # ------------------------------------------------------------- trading
+    def can_open(self, sig) -> bool:
+        """Would open_from_signal accept this signal right now? Lets the scanner
+        skip paying for an AI review of a trade that could not open anyway."""
+        with self._lock:
+            return (not self.halted_reason
+                    and sig.action == "enter" and sig.direction in ("long", "short")
+                    and self._key(sig.symbol, sig.mode) not in self.positions
+                    and len(self.positions) < self.risk.max_open_positions
+                    and sig.position_size_units > 0)
+
     def open_from_signal(self, sig) -> PaperPosition | None:
         """sig is a strategy.Signal. Returns the position if one was opened."""
         with self._lock:
-            if self.halted_reason:
-                return None
-            if sig.action != "enter" or sig.direction not in ("long", "short"):
+            if not self.can_open(sig):
                 return None
             key = self._key(sig.symbol, sig.mode)
-            if key in self.positions:
-                return None
-            if len(self.positions) >= self.risk.max_open_positions:
-                return None
-            if sig.position_size_units <= 0:
-                return None
 
             notional = sig.position_size_units * sig.entry
             fee = self._fee(notional)
@@ -232,6 +236,8 @@ class PaperBroker:
                 score=sig.score,
                 fees_paid=fee,
                 note=f"{sig.confidence} confidence, {sig.regime} regime",
+                ai_confidence=(getattr(sig, "ai", None) or {}).get("confidence")
+                if (getattr(sig, "ai", None) or {}).get("state") == "approved" else None,
             )
             self.positions[key] = pos
             log.info("paper open %s %s @ %.6g (score %.0f)",
@@ -273,6 +279,7 @@ class PaperBroker:
             bars_held=pos.bars_held,
             reason=reason,
             score=pos.score,
+            ai_confidence=pos.ai_confidence,
         )
         self.closed.append(trade)
         self.positions.pop(key, None)
@@ -395,6 +402,8 @@ class PaperBroker:
                 "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
                 "avg_r": round(sum(r_values) / len(r_values), 3) if r_values else 0.0,
                 "avg_pnl": round(sum(t.pnl for t in closed) / len(closed), 4) if closed else None,
+                "ai_closed": sum(1 for t in closed if t.ai_confidence is not None),
+                "ai_wins": sum(1 for t in closed if t.ai_confidence is not None and t.pnl > 0),
                 "best_r": round(max(r_values), 2) if r_values else 0.0,
                 "worst_r": round(min(r_values), 2) if r_values else 0.0,
                 "total_fees": round(sum(t.fees for t in closed), 2),
