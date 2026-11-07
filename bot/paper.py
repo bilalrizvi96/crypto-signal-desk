@@ -354,6 +354,20 @@ class PaperBroker:
             self.equity_curve.append({"t": _now(), "equity": round(equity, 4)})
         return events
 
+    def close_all(self, prices: dict[str, float], reason: str) -> list[ClosedTrade]:
+        """Close every open position at its current price."""
+        closed = []
+        with self._lock:
+            for key in list(self.positions.keys()):
+                pos = self.positions[key]
+                px = prices.get(pos.symbol)
+                if px is None:
+                    continue
+                t = self._close(key, pos, px, pos.remaining_units, reason, False)
+                if t:
+                    closed.append(t)
+        return closed
+
     # --------------------------------------------------------------- stats
     def success_chance(self, mode: str) -> dict:
         """Estimated chance a new signal in this mode closes in profit.

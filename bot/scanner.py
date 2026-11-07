@@ -17,6 +17,7 @@ from .ai_review import AIReviewer
 from .live import LiveTrader
 from .news import NewsEngine
 from .paper import PaperBroker, prior_success
+from .settings import DeskSettings, goal_status
 from .strategy import build_signal, scalp_fit
 
 log = logging.getLogger("bot.scanner")
@@ -51,6 +52,7 @@ class Scanner:
         self.paper = PaperBroker(cfg.risk) if cfg.paper_enabled else None
         self.live = LiveTrader(cfg.live, cfg.risk) if cfg.live.enabled else None
         self.ai = AIReviewer(cfg.ai) if cfg.ai.enabled else None
+        self.settings = DeskSettings(cfg)
         self._lock = threading.RLock()
         self._last_result: dict | None = None
         self._universe: list[SymbolInfo] = []
@@ -215,10 +217,17 @@ class Scanner:
         # success estimate after mark_to_market so trades closed this scan count
         self._attach_success(all_signals)
 
+        # at the profit goal, bank the practice gains and open nothing new
+        goal = goal_status(self.cfg, self.paper.stats(prices) if self.paper else None)
+        if goal.get("locked") and self.paper and self.paper.positions:
+            for t in self.paper.close_all(prices, "profit goal reached"):
+                paper_events.append(("close", t))
+            goal = goal_status(self.cfg, self.paper.stats(prices))
+
         # every entry goes through the AI review first; only approved ones trade
         entries = sorted((s for s in all_signals if s.action == "enter"),
                          key=lambda s: -abs(s.score))
-        approved = self._ai_gate(entries)
+        approved = [] if goal.get("locked") else self._ai_gate(entries)
 
         if self.paper:
             for sig in approved:
@@ -277,6 +286,8 @@ class Scanner:
             "news_errors": self.news.errors() if self.cfg.news.enabled else [],
             "paper": self.paper.stats(prices) if self.paper else None,
             "ai": self.ai.stats() if self.ai else {"enabled": False},
+            "settings": self.settings.view(),
+            "goal": goal,
             "paper_events": [
                 {"type": kind, "data": payload.to_dict() if hasattr(payload, "to_dict") else payload}
                 for kind, payload in paper_events
@@ -321,6 +332,11 @@ class Scanner:
                 self.ai.request(sig, self._ai_context(sig))
             sig.ai = self.ai.status_for(sig)
             if self.ai.approves(verdict):
+                approved.append(sig)
+            # the AI couldn't look at it (no key, error, spent budget): unless
+            # a review is required, the desk's own rules decide. A "skip" still blocks.
+            elif not self.cfg.ai.required and sig.ai.get("state") in ("unavailable", "budget", "error"):
+                sig.ai = {**sig.ai, "fallback": True}
                 approved.append(sig)
         return approved
 

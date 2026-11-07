@@ -227,6 +227,14 @@ PAGE = r"""<!doctype html>
   .wallet input{width:100%;font:inherit;font-size:14px;color:var(--ink);
     background:var(--surface-2);border:1px solid var(--border);border-radius:7px;padding:7px 10px}
   .wallet .hint{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.45}
+  .wallet .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .wallet .modes{display:flex;gap:12px;flex-wrap:wrap;font-size:13px;margin-top:2px}
+  .wallet .modes label,.wallet label.chk{display:inline-flex;align-items:center;gap:5px;margin:0;font-size:13px;color:var(--ink-2)}
+  .wallet .modes input,.wallet label.chk input{width:auto}
+  .wallet .save{margin-top:10px;display:flex;gap:10px;align-items:center}
+  .goal-bar{height:7px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden;margin:6px 0 3px}
+  .goal-bar i{display:block;height:100%;background:var(--series-1)}
+  .goal-bar i.done{background:#3fb37f}
   .mine{background:var(--surface-2);border-radius:7px;padding:8px 10px;font-size:12px}
   .mine table.lv td{border-bottom-color:var(--axis)}
   @media (max-width:640px){.wrap{padding:12px 16px 50px}.search{max-width:none}}
@@ -423,6 +431,30 @@ PAGE = r"""<!doctype html>
         <div class="hint" id="wHint">Every card will show what to buy with your money, what you lose
           if the stop is hit, and what you make at each target. Saved in this browser only.</div>
       </div>
+      <div class="panel wallet" id="botPanel">
+        <h2>Bot settings <span class="c">how the bot trades</span></h2>
+        <div class="row2">
+          <div><label for="bRisk">Risk per trade (%)</label>
+            <input id="bRisk" type="number" min="0.1" max="5" step="0.1" inputmode="decimal"></div>
+          <div><label for="bOpen">Trades at once</label>
+            <input id="bOpen" type="number" min="1" max="20" step="1" inputmode="numeric"></div>
+        </div>
+        <label for="bNotional">Most money in one trade (USDT)</label>
+        <input id="bNotional" type="number" min="5" step="any" inputmode="decimal">
+        <label>Send testnet orders for</label>
+        <div class="modes" id="bModes">
+          <label><input type="checkbox" value="scalp"> Scalp</label>
+          <label><input type="checkbox" value="swing"> Swing</label>
+          <label><input type="checkbox" value="position"> Long-term</label>
+        </div>
+        <div class="row2" style="align-items:end">
+          <div><label for="bGoal">Profit goal (%)</label>
+            <input id="bGoal" type="number" min="0" max="1000" step="1" inputmode="decimal"></div>
+          <label class="chk" style="padding-bottom:8px"><input id="bLock" type="checkbox"> Lock profit at goal</label>
+        </div>
+        <div class="save"><button class="primary" id="bSave">Save</button><span class="hint" id="bMsg" style="margin:0"></span></div>
+        <div class="hint" id="bHint"></div>
+      </div>
       <div class="panel" id="paperPanel"></div>
       <div class="panel" id="newsPanel"></div>
     </aside>
@@ -606,6 +638,13 @@ function renderTiles(){
                   :`<span style="font-size:18px;color:var(--muted)">off</span>`,
       ai.available?`≈ $${(ai.spend_today_usd||0).toFixed(2)} today · ${ai.web_search?"with web search":"desk data only"}`
                   :esc(ai.reason||"")));
+  }
+  const goal=state.goal||{};
+  if(goal.enabled){
+    t.push(tile(`Goal: +${goal.target_pct}%`,
+      goal.reached?`<span class="up">Reached</span>`:`${Math.round(goal.progress_pct)}<span style="font-size:15px;color:var(--muted)">% of the way</span>`,
+      `<div class="goal-bar"><i class="${goal.reached?"done":""}" style="width:${goal.progress_pct}%"></i></div>`+
+      (goal.locked?"profit banked — no new trades":`practice return ${pct(goal.return_pct)}`)));
   }
   if(paper){
     const r=paper.total_return_pct||0;
@@ -823,6 +862,7 @@ function card(s, exchange){
 }
 
 /* ---------- AI review ---------- */
+function aiRequired(){ return !!(state&&state.ai&&state.ai.required); }
 function aiBlock(s, opts){
   const a=s.ai||{}; opts=opts||{};
   if(!a.state || (a.state==="none" && s.action!=="enter")) return "";
@@ -840,10 +880,13 @@ function aiBlock(s, opts){
   const head={
     approved:   ["✓ AI approved this trade"+conf, a.summary],
     rejected:   ["✗ AI says skip"+conf, a.summary],
-    error:      ["✗ AI review failed — trade skipped", a.error||a.summary],
+    error:      [aiRequired()?"✗ AI review failed — trade skipped":"AI review failed — the desk's rules decide", a.error||a.summary],
     reviewing:  [`<span class="ai-dot" aria-hidden="true"></span>AI is researching this trade…`, "It checks live news and the charts; usually under two minutes."],
-    unavailable:["AI review is off", (a.reason||"")+". Trades wait for AI approval, so none will open."],
-    budget:     ["Daily AI review limit reached", "No new trades open until tomorrow (UTC)."],
+    unavailable:["AI review is off", (a.reason||"")+(aiRequired()
+                  ?". Trades wait for AI approval, so none will open."
+                  :". Trades open on the desk's own rules until it's on.")],
+    budget:     ["Daily AI review limit reached", aiRequired()?"No new trades open until tomorrow (UTC)."
+                  :"Trades open on the desk's own rules until tomorrow (UTC)."],
     none:       ["Not reviewed", "Already holding this or no free trade slot, so no review was needed."],
   }[a.state]||["AI", ""];
   return `<div class="ai-box ${esc(a.state)}" role="status"><div class="ai-h"><span>${head[0]}</span></div>
@@ -1258,6 +1301,56 @@ function renderWalletHint(){
     ${warn.map(w=>`<div style="color:#ffb694;margin-top:4px">${w}</div>`).join("")}`;
 }
 
+/* ---------- bot settings (saved on the server, used by the bot) ---------- */
+let botLoaded=false, botCanEdit=false;
+const bEl=id=>document.getElementById(id);
+function fillBot(v){
+  bEl("bRisk").value=v.risk_per_trade_pct; bEl("bOpen").value=v.max_open_positions;
+  bEl("bNotional").value=v.max_notional_per_trade; bEl("bGoal").value=v.profit_goal_pct;
+  bEl("bLock").checked=!!v.lock_at_goal;
+  document.querySelectorAll("#bModes input").forEach(c=>c.checked=(v.live_modes||[]).includes(c.value));
+  renderBotHint();
+}
+function botForm(){
+  return {risk_per_trade_pct:parseFloat(bEl("bRisk").value), max_open_positions:parseInt(bEl("bOpen").value,10),
+    max_notional_per_trade:parseFloat(bEl("bNotional").value), profit_goal_pct:parseFloat(bEl("bGoal").value||"0"),
+    lock_at_goal:bEl("bLock").checked,
+    live_modes:[...document.querySelectorAll("#bModes input:checked")].map(c=>c.value)};
+}
+function renderBotHint(){
+  const f=botForm(), eq=(state&&state.settings&&state.settings.account_equity)||1000;
+  if(!(f.risk_per_trade_pct>0&&f.max_open_positions>0&&f.max_notional_per_trade>0)){ bEl("bHint").textContent=""; return; }
+  const inUse=Math.min(eq, f.max_open_positions*f.max_notional_per_trade);
+  const worst=f.max_open_positions*eq*f.risk_per_trade_pct/100;
+  bEl("bHint").innerHTML=`Up to <strong>${fmtUsd(inUse)}</strong> of the ${fmtUsd(eq)} account can be in trades at once
+    (${Math.round(inUse/eq*100)}%). If every open trade hit its stop together you'd lose about
+    <strong>${fmtUsd(worst)}</strong> (${(worst/eq*100).toFixed(1)}%).
+    ${f.risk_per_trade_pct>2?`<div style="color:#ffb694;margin-top:4px">Above 2% per trade, a short losing streak takes a big bite.</div>`:""}
+    <div style="margin-top:6px">${botCanEdit?"Applies from the next scan.":"Only the desk owner can change these."}</div>`;
+}
+async function loadBot(){
+  try{
+    const r=await fetch("/api/settings",{cache:"no-store"}); if(!r.ok) return;
+    const v=await r.json(); botCanEdit=!!v.can_edit; botLoaded=true; fillBot(v);
+    document.querySelectorAll("#botPanel input,#bSave").forEach(x=>x.disabled=!botCanEdit);
+  }catch(e){}
+}
+function wireBot(){
+  if(!LIVE){ bEl("botPanel").style.display="none"; return; }
+  document.querySelectorAll("#botPanel input").forEach(i=>i.addEventListener("input",renderBotHint));
+  bEl("bSave").onclick=async()=>{
+    const msg=bEl("bMsg"); msg.textContent="Saving…";
+    try{
+      const r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(botForm())});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ msg.innerHTML=`<span style="color:#ffb694">${esc(d.error||"Could not save")}</span>`; return; }
+      fillBot(d); msg.textContent="Saved ✓";
+      if(state&&state.settings) Object.assign(state.settings,d);
+    }catch(e){ msg.innerHTML='<span style="color:#ffb694">Could not reach the desk</span>'; }
+  };
+  loadBot();
+}
+
 /* ---------- feedback ---------- */
 const FB_AREAS=["signals","search","wallet","success chance","news","speed","design","explanations","other"];
 function wireFeedback(){
@@ -1356,6 +1449,8 @@ function renderPaper(){
       :"No AI-approved trade has finished yet. This line will show whether the AI's picks do better."}</div>`:""}
     ${n&&!wins?`<div class="pp-note">No winning trades yet. That's what practice money is for:
       it shows how the signals really perform before anyone risks savings on them.</div>`:""}
+    ${state.goal&&state.goal.locked?`<div class="pp-note" style="margin-top:9px">🎯 Profit goal of +${state.goal.target_pct}% reached.
+      Open trades were closed to bank it and no new ones open. Raise the goal in <strong>Bot settings</strong> to keep going.</div>`:""}
     ${p.halted_reason?`<div class="warn block" style="margin-top:9px"><span>⛔</span><div>Paused for today:
       losses hit the daily limit, so no new practice trades open until tomorrow.</div></div>`:""}
     <h2 style="margin-top:16px">Open trades <span class="c">${(p.positions||[]).length}</span></h2>
@@ -1474,6 +1569,7 @@ wireToggles("bucketGrp", filters.buckets, "bucket");
 wireToggles("sideGrp", filters.sides, "side");
 document.getElementById("refreshBtn").onclick=()=>fetchState(true);
 wireWallet();
+wireBot();
 wireFeedback();
 // search, feedback and sign-out need the live server; a saved snapshot has nothing to ask
 if(!LIVE){

@@ -171,6 +171,7 @@ class AIReviewer:
                 "reviews_today": self._reviews_today, "cap": self.cfg.max_reviews_per_day,
                 "spend_today_usd": round(self._spend_today, 4),
                 "pending": len(self._pending), "min_confidence": self.cfg.min_confidence,
+                "required": self.cfg.required,
             }
 
     # ----------------------------------------------------------- verdicts

@@ -188,6 +188,24 @@ def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) 
             log.warning("AI research failed for %s: %s", symbol, exc)
             return jsonify({"state": "error", "reason": str(exc)[:200]}), 502
 
+    @app.get("/api/settings")
+    def api_settings():
+        return jsonify({**scanner.settings.view(), "can_edit": admin_allowed()})
+
+    @app.post("/api/settings")
+    def api_settings_update():
+        """Change how the bot trades. Owner only: on a hosted site every
+        visitor shares one bot, so a visitor must not be able to resize it."""
+        if not admin_allowed():
+            return jsonify({"ok": False, "error": "only the desk owner can change trading settings"}), 403
+        if not request.is_json:
+            return jsonify({"ok": False, "error": "expected JSON"}), 415
+        try:
+            view = scanner.settings.update(request.get_json(silent=True) or {})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, **view})
+
     @app.post("/api/paper/reset")
     def api_paper_reset():
         if not scanner.paper:

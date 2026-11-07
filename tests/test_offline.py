@@ -23,6 +23,11 @@ from bot.dashboard import render_page                 # noqa: E402
 from bot.data import SymbolInfo                       # noqa: E402
 from bot.paper import PaperBroker                     # noqa: E402
 from bot.strategy import build_signal, detect_regime  # noqa: E402
+import bot.settings as settings_mod                   # noqa: E402
+import tempfile as _tempfile                          # noqa: E402
+
+# never read or write the real dashboard settings while testing
+settings_mod.STATE_DIR = Path(_tempfile.mkdtemp())
 
 PASS, FAIL = [], []
 
@@ -803,25 +808,44 @@ def test_ai_review():
         check("the daily count survives a restart",
               AIReviewer(sc.cfg.ai, state_dir=tmp, client=fake).stats()["reviews_today"] == len(fake.calls))
 
-        # skip and low confidence never trade
-        for label, fk in (("a skip verdict opens nothing", FakeClaude("skip", 85)),
-                          ("a low-confidence take opens nothing", FakeClaude("take", 40)),
-                          ("an API failure opens nothing (fail-closed)", FakeClaude(fail=True)),
-                          ("a refusal opens nothing", FakeClaude(script=["refusal"] * 50))):
+        # skip and low confidence never trade; with required, failures don't either
+        for label, fk, req in (("a skip verdict opens nothing", FakeClaude("skip", 85), False),
+                               ("a low-confidence take opens nothing", FakeClaude("take", 40), False),
+                               ("required: an API failure opens nothing", FakeClaude(fail=True), True),
+                               ("required: a refusal opens nothing", FakeClaude(script=["refusal"] * 50), True)):
             t2 = Path(tempfile.mkdtemp())
-            sc2 = _ai_scanner(fk, t2)
+            sc2 = _ai_scanner(fk, t2, required=req)
             sc2.scan(); _wait_reviews(sc2)
             check(label, sc2.scan()["paper"]["open_positions"] == 0)
             shutil.rmtree(t2, ignore_errors=True)
 
-        # no key: nothing is reviewed and nothing trades
+        # no key, review required: nothing is reviewed and nothing trades
         t3 = Path(tempfile.mkdtemp())
-        sc3 = _ai_scanner(None, t3)
+        sc3 = _ai_scanner(None, t3, required=True)
         r3 = sc3.scan()
         states = {s["ai"].get("state") for m in r3["signals"].values() for s in m if s["action"] == "enter"}
-        check("without an API key entries wait and nothing opens",
+        check("required: without an API key entries wait and nothing opens",
               r3["paper"]["open_positions"] == 0 and states == {"unavailable"}, str(states))
         shutil.rmtree(t3, ignore_errors=True)
+
+        # no key, not required: the desk's own rules trade
+        t3b = Path(tempfile.mkdtemp())
+        sc3b = _ai_scanner(None, t3b)
+        r3b = sc3b.scan()
+        entered = [s for m in r3b["signals"].values() for s in m if s["action"] == "enter"]
+        check("without an API key entries open on the desk's rules",
+              r3b["paper"]["open_positions"] >= 1 and r3b["ai"]["required"] is False)
+        check("rule-based entries are marked as fallback, not AI-approved",
+              all(p["ai_confidence"] is None for p in r3b["paper"]["positions"])
+              and any(s["ai"].get("fallback") for s in entered))
+        shutil.rmtree(t3b, ignore_errors=True)
+
+        # an API failure, not required: rules decide on the next scan
+        t3c = Path(tempfile.mkdtemp())
+        sc3c = _ai_scanner(FakeClaude(fail=True), t3c)
+        sc3c.scan(); _wait_reviews(sc3c)
+        check("an API failure falls back to the desk's rules", sc3c.scan()["paper"]["open_positions"] >= 1)
+        shutil.rmtree(t3c, ignore_errors=True)
 
         # the daily cap holds
         t4 = Path(tempfile.mkdtemp())
@@ -852,6 +876,91 @@ def test_ai_review():
         shutil.rmtree(tmp, ignore_errors=True)
         if saved_key is not None:
             os.environ["ANTHROPIC_API_KEY"] = saved_key
+
+
+# ---------------------------------------------------------------------------
+# 7c. dashboard trading settings and the profit goal
+# ---------------------------------------------------------------------------
+def test_settings_and_goal():
+    print("\n[7c] Trading settings and profit goal")
+    import shutil
+    import tempfile
+    from bot.accounts import Accounts
+    from bot.server import create_app
+    from bot.settings import DeskSettings, goal_status
+
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        cfg = Config()
+        ds = DeskSettings(cfg, path=tmp / "s.json")
+        v = ds.update({"risk_per_trade_pct": 1.5, "max_open_positions": 10,
+                       "max_notional_per_trade": 120, "live_modes": ["position", "scalp"],
+                       "profit_goal_pct": 25, "lock_at_goal": False})
+        check("settings change the running config",
+              cfg.risk.risk_per_trade_pct == 1.5 and cfg.risk.max_open_positions == 10
+              and cfg.risk.max_notional_per_trade == 120 and cfg.live.modes == ["scalp", "position"]
+              and cfg.risk.profit_goal_pct == 25 and cfg.risk.lock_at_goal is False)
+        check("settings view reflects them", v["max_open_positions"] == 10 and v["live_modes"] == ["scalp", "position"])
+        cfg2 = Config()
+        DeskSettings(cfg2, path=tmp / "s.json")
+        check("settings survive a restart", cfg2.risk.max_open_positions == 10
+              and cfg2.live.modes == ["scalp", "position"])
+        for bad in ({"risk_per_trade_pct": 50}, {"max_open_positions": 0},
+                    {"live_modes": ["moon"]}, {"max_notional_per_trade": "lots"}):
+            try:
+                ds.update(bad); ok = False
+            except ValueError:
+                ok = True
+            check(f"rejects {bad}", ok)
+        check("a rejected update changes nothing", cfg.risk.max_open_positions == 10)
+        try:
+            ds.update({"max_open_positions": 3, "risk_per_trade_pct": 99})
+        except ValueError:
+            pass
+        check("a half-bad update is all-or-nothing", cfg.risk.max_open_positions == 10)
+
+        # goal maths
+        cfg.risk.profit_goal_pct, cfg.risk.lock_at_goal = 20, True
+        g = goal_status(cfg, {"total_return_pct": 5.0})
+        check("goal progress is a share of the target", g["progress_pct"] == 25.0 and not g["reached"])
+        g = goal_status(cfg, {"total_return_pct": 21.0})
+        check("reaching the goal locks when lock is on", g["reached"] and g["locked"])
+        cfg.risk.profit_goal_pct = 0
+        check("a 0% goal is off", goal_status(cfg, {"total_return_pct": 50})["enabled"] is False)
+
+        # at the goal the scanner banks open trades and opens nothing new
+        sc = _ai_scanner(None, tmp)
+        r1 = sc.scan()
+        check("goal test opened trades first", r1["paper"]["open_positions"] >= 1)
+        sc.cfg.risk.profit_goal_pct = 0.0001       # any gain at all counts as reached
+        sc.paper.cash = sc.paper.starting_equity * 1.3
+        r2 = sc.scan()
+        check("at the goal, open practice trades are closed", r2["paper"]["open_positions"] == 0
+              and r2["goal"]["locked"], str(r2["goal"]))
+        check("they close as 'profit goal reached'",
+              any(t["reason"] == "profit goal reached" for t in r2["paper"]["recent_trades"]))
+        check("no new trade opens while locked", sc.scan()["paper"]["open_positions"] == 0)
+        sc.cfg.risk.profit_goal_pct = 1000
+        check("raising the goal unlocks trading", sc.scan()["paper"]["open_positions"] >= 1)
+
+        # the HTTP routes: owner-only writes
+        sc.settings = DeskSettings(sc.cfg, path=tmp / "s2.json")
+        app = create_app(sc.cfg, sc, Accounts(tmp))
+        c = app.test_client()
+        c.post("/api/signup", json={"email": "owner@example.com"})
+        r = c.get("/api/settings")
+        check("settings are readable after sign-up", r.status_code == 200 and r.get_json()["can_edit"])
+        r = c.post("/api/settings", json={"max_open_positions": 7})
+        check("the owner can save settings", r.status_code == 200 and sc.cfg.risk.max_open_positions == 7)
+        check("bad settings get a 400", c.post("/api/settings", json={"max_open_positions": 99}).status_code == 400)
+        r = c.post("/api/settings", json={"max_open_positions": 2},
+                   headers={"X-Forwarded-For": "8.8.8.8"})
+        check("a remote visitor cannot change settings", r.status_code == 403
+              and sc.cfg.risk.max_open_positions == 7)
+        html = c.get("/app").data
+        check("dashboard has the bot settings panel", b'id="botPanel"' in html)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -903,6 +1012,7 @@ def main():
     test_config_and_gating()
     test_server(result)
     test_ai_review()
+    test_settings_and_goal()
     test_postgres()
 
     print("\n" + "═" * 74)

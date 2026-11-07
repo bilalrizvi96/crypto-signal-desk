@@ -81,6 +81,8 @@ class RiskCfg:
     max_leverage: float = 3.0
     daily_loss_limit_pct: float = 5.0  # kill switch: stop trading after this drawdown
     max_notional_per_trade: float = 250.0
+    profit_goal_pct: float = 20.0      # practice return to aim for; 0 turns the goal off
+    lock_at_goal: bool = True          # at the goal: bank open practice trades, open no new ones
 
 
 @dataclass
@@ -103,9 +105,12 @@ class LiveCfg:
 
 @dataclass
 class AICfg:
-    """Claude reviews every trade before it opens. Fail-closed: no key, an
-    error, a refusal or a spent daily budget means the trade is skipped."""
+    """Claude reviews every trade before it opens. An AI "skip" always blocks
+    the trade. When the AI can't review (no key, an error, a spent daily
+    budget), `required` decides: true skips the trade, false lets it open on
+    the desk's own rules."""
     enabled: bool = True
+    required: bool = False
     model: str = "claude-opus-5-5"
     effort: str = "high"
     web_search: bool = True

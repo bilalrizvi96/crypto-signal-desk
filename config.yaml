@@ -100,6 +100,8 @@ risk:
   max_leverage: 3.0
   daily_loss_limit_pct: 5.0  # kill switch: stop entering after a 5% day
   max_notional_per_trade: 250
+  profit_goal_pct: 20        # practice return to aim for (0 = off)
+  lock_at_goal: true         # at the goal: bank open practice trades, open no new ones
 
 # ── Paper trading ────────────────────────────────────────────────────────────
 paper_enabled: true
@@ -127,9 +129,11 @@ live:
 # ── AI trade review ──────────────────────────────────────────────────────────
 #  Claude researches each setup (desk data + live web search) and must say
 #  "take" before a paper or exchange trade opens. Needs ANTHROPIC_API_KEY in
-#  .env. Fail-closed: no key, an error or a spent budget skips the trade.
+#  .env. An AI "skip" always blocks the trade. With no key, an error or a
+#  spent budget, `required: false` trades on the desk's own rules instead.
 ai:
   enabled: true
+  required: false
   model: claude-opus-5-5
   effort: high
   web_search: true
