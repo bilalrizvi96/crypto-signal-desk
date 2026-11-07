@@ -16,6 +16,7 @@ STATE_DIR = Path(os.getenv("BOT_STATE_DIR") or ROOT / "state")   # paper state, 
 @dataclass
 class UniverseCfg:
     exchange: str = "binance"
+    fallback_exchange: str = "okx"     # read prices here while `exchange` rate-limits us ("" = none)
     market_type: str = "spot"          # "spot" or "swap" (perps, needed for real shorts)
     quote: str = "USDT"
     large_cap_top: int = 12            # top N by 24h quote volume = "large"

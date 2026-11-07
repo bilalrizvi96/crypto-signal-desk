@@ -57,16 +57,31 @@ class MarketData:
     def __init__(self, cfg: UniverseCfg):
         self.cfg = cfg
         self._lock = threading.RLock()
-        self._ohlcv_cache: dict[tuple[str, str], tuple[float, pd.DataFrame]] = {}
-        self._tickers_cache: tuple[float, dict] | None = None
-        self.exchange = self._build_exchange()
+        self._ohlcv_cache: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
+        self._tickers_cache: tuple[float, str, dict] | None = None
+        self.primary = self._build_exchange(cfg.exchange)
+        self.backup = (self._build_exchange(cfg.fallback_exchange)
+                       if cfg.fallback_exchange and cfg.fallback_exchange.lower() != cfg.exchange.lower()
+                       else None)
         self.catalog = AssetCatalog(cfg.exchange)
 
+    @property
+    def exchange(self):
+        """Where market data comes from right now: the backup exchange while
+        the main one has this server banned, the main one otherwise."""
+        if self.backup is not None and time.time() < self.banned_until:
+            return self.backup
+        return self.primary
+
+    @property
+    def source(self) -> str:
+        return self.exchange.id
+
     # ---------------------------------------------------------------- setup
-    def _build_exchange(self):
+    def _build_exchange(self, name: str):
         import ccxt
 
-        name = self.cfg.exchange.lower()
+        name = name.lower()
         if not hasattr(ccxt, name):
             raise ValueError(f"unknown exchange '{name}' — check ccxt.exchanges")
         klass = getattr(ccxt, name)
@@ -75,6 +90,8 @@ class MarketData:
             opts["options"] = {"defaultType": "swap"}
         elif name == "binance":
             opts["options"] = {"fetchMarkets": ["spot"]}   # skip futures market lists we never use
+        elif name == "okx":
+            opts["options"] = {"fetchMarkets": {"types": ["spot"]}}
         ex = klass(opts)
         if name == "binance" and self.cfg.market_type not in ("swap", "future"):
             # Binance's market-data-only host: same public data, separate limits.
@@ -86,21 +103,26 @@ class MarketData:
     def load_markets(self):
         with self._lock:
             if not self.exchange.markets:
-                self._call(self.exchange.load_markets)
+                self._call("load_markets")
         return self.exchange.markets
 
     # ------------------------------------------------------------ backoff
     banned_until: float = 0.0     # epoch seconds; no requests before this
 
-    def _call(self, fn, *args, **kwargs):
+    def _call(self, method: str, *args, **kwargs):
         """Every exchange request goes through here. After a 418/429 the
         exchange says how long the ban lasts; sending anything sooner only
-        makes it longer, so requests stop until then."""
-        if time.time() < self.banned_until:
+        makes it longer, so requests stop until then and go to the backup
+        exchange instead, if there is one."""
+        ex = self.exchange
+        if ex is self.primary and time.time() < self.banned_until:
             raise RateLimited(self.ban_message())
         try:
-            return fn(*args, **kwargs)
+            return getattr(ex, method)(*args, **kwargs)
         except Exception as exc:
+            if ex is not self.primary:
+                raise
+
             text = str(exc)
             m = _BAN_UNTIL.search(text)
             if m:
@@ -111,23 +133,30 @@ class MarketData:
                 raise
             if until > self.banned_until:
                 self.banned_until = until
-                log.warning("exchange rate limit: pausing requests until %s",
-                            time.strftime("%H:%M UTC", time.gmtime(until)))
+                log.warning("exchange rate limit: pausing %s requests until %s%s", self.cfg.exchange,
+                            time.strftime("%H:%M UTC", time.gmtime(until)),
+                            f", reading prices from {self.backup.id}" if self.backup else "")
+            if self.backup is not None:
+                return self._call(method, *args, **kwargs)
             raise RateLimited(self.ban_message()) from exc
 
     def ban_message(self) -> str:
-        return (f"{self.cfg.exchange} is rate-limiting this server until "
-                f"{time.strftime('%H:%M UTC', time.gmtime(self.banned_until))}")
+        msg = (f"{self.cfg.exchange.capitalize()} is rate-limiting this server until "
+               f"{time.strftime('%H:%M UTC', time.gmtime(self.banned_until))}")
+        if self.backup is not None:
+            msg += f", so prices come from {self.backup.id.upper()} meanwhile (its coins, not {self.cfg.exchange.capitalize()}'s stock tokens)"
+        return msg
 
     # ------------------------------------------------------------- universe
     def fetch_tickers(self, ttl: int = 120) -> dict:
         now = time.time()
+        source = self.source
         with self._lock:
-            if self._tickers_cache and now - self._tickers_cache[0] < ttl:
-                return self._tickers_cache[1]
-        tickers = self._call(self.exchange.fetch_tickers)
+            if self._tickers_cache and self._tickers_cache[1] == source and now - self._tickers_cache[0] < ttl:
+                return self._tickers_cache[2]
+        tickers = self._call("fetch_tickers")
         with self._lock:
-            self._tickers_cache = (now, tickers)
+            self._tickers_cache = (now, source, tickers)
         return tickers
 
     def market_rows(self, include_stable: bool = False) -> list[dict]:
@@ -264,7 +293,7 @@ class MarketData:
         Cached for a fraction of the bar duration so a 60s scan loop doesn't
         re-download 4h candles that cannot possibly have changed.
         """
-        key = (symbol, timeframe)
+        key = (self.source, symbol, timeframe)
         if ttl is None:
             ttl = max(15, min(tf_seconds(timeframe) // 3, 900))
         now = time.time()
@@ -273,7 +302,7 @@ class MarketData:
             if hit and now - hit[0] < ttl:
                 return hit[1]
 
-        raw = self._call(self.exchange.fetch_ohlcv, symbol, timeframe=timeframe, limit=limit)
+        raw = self._call("fetch_ohlcv", symbol, timeframe=timeframe, limit=limit)
         if not raw:
             raise RuntimeError(f"no OHLCV returned for {symbol} {timeframe}")
 
@@ -293,7 +322,7 @@ class MarketData:
         return df
 
     def fetch_ticker(self, symbol: str) -> dict:
-        return self._call(self.exchange.fetch_ticker, symbol)
+        return self._call("fetch_ticker", symbol)
 
     def clear_cache(self):
         with self._lock:

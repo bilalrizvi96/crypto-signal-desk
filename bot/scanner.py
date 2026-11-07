@@ -59,19 +59,23 @@ class Scanner:
         self._last_result: dict | None = None
         self._universe: list[SymbolInfo] = []
         self._universe_at: float = 0.0
+        self._universe_src: str = ""
         self._last_bar_ts: dict[tuple[str, str], pd.Timestamp] = {}
         self.scan_count = 0
 
     # ------------------------------------------------------------ universe
     def universe(self, ttl: int = 900) -> list[SymbolInfo]:
         now = time.time()
+        source = getattr(self.data, "source", "")
         with self._lock:
-            if self._universe and now - self._universe_at < ttl:
+            # rebuild when the data source switched: the backup lists other coins
+            if self._universe and now - self._universe_at < ttl and self._universe_src == source:
                 return self._universe
         uni = self.data.build_universe()
         with self._lock:
             self._universe = uni
             self._universe_at = now
+            self._universe_src = source
         return uni
 
     # ---------------------------------------------------------- per-symbol
@@ -271,11 +275,12 @@ class Scanner:
         watching = [s for s in all_signals if s.action == "watch"]
 
         result = {
-            "warning": None,
+            "warning": (self.data.ban_message() + "."
+                        if self.data.banned_until > time.time() else None),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "scan_number": self.scan_count,
             "duration_seconds": round(time.time() - started, 2),
-            "exchange": self.cfg.universe.exchange,
+            "exchange": getattr(self.data, "source", self.cfg.universe.exchange),
             "market_type": self.cfg.universe.market_type,
             "universe": [
                 {

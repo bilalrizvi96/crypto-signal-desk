@@ -895,34 +895,55 @@ def test_rate_limit():
     import time as _t
     from bot.data import MarketData, RateLimited
 
-    md = MarketData.__new__(MarketData)          # no network: just the backoff logic
-    md.cfg = Config().universe
-    md.banned_until = 0.0
-    calls = []
     until_ms = int((_t.time() + 600) * 1000)
 
-    def banned(*a, **k):
-        calls.append(1)
-        raise RuntimeError(f'binance 418 {{"code":-1003,"msg":"Way too much request weight used; '
-                           f'IP banned until {until_ms}."}}')
+    class Ex:
+        def __init__(self, id, banned=False):
+            self.id, self.banned, self.calls = id, banned, 0
+        def fetch_ticker(self, symbol):
+            self.calls += 1
+            if self.banned:
+                raise RuntimeError(f'binance 418 {{"code":-1003,"msg":"Way too much request weight '
+                                   f'used; IP banned until {until_ms}."}}')
+            if symbol == "BAD":
+                raise ValueError("bad symbol")
+            return {"source": self.id}
+
+    def make(backup):
+        md = MarketData.__new__(MarketData)      # no network: just the routing logic
+        md.cfg = Config().universe
+        md.banned_until = 0.0
+        md.primary, md.backup = Ex("binance", banned=True), backup
+        return md
+
+    md = make(None)
     try:
-        md._call(banned); ok = False
+        md._call("fetch_ticker", "BTC/USDT"); ok = False
     except RateLimited:
         ok = True
     check("a ban reply becomes RateLimited", ok)
     check("the ban end time is read from the reply", abs(md.banned_until - until_ms / 1000) < 1)
     try:
-        md._call(banned)
+        md._call("fetch_ticker", "BTC/USDT")
     except RateLimited:
         pass
-    check("no request is sent while banned", len(calls) == 1)
-    md.banned_until = 0.0
+    check("no request is sent while banned", md.primary.calls == 1)
+    md.primary.banned, md.banned_until = False, 0.0
     try:
-        md._call(lambda: (_ for _ in ()).throw(ValueError("bad symbol")))
-        ok = False
+        md._call("fetch_ticker", "BAD"); ok = False
     except ValueError:
         ok = True
     check("ordinary errors are not treated as bans", ok and md.banned_until == 0.0)
+
+    md = make(Ex("okx"))
+    out = md._call("fetch_ticker", "BTC/USDT")
+    check("while banned, data comes from the backup exchange",
+          out == {"source": "okx"} and md.source == "okx" and md.primary.calls == 1)
+    md._call("fetch_ticker", "ETH/USDT")
+    check("the banned exchange gets no more requests", md.primary.calls == 1 and md.backup.calls == 2)
+    check("the notice says where prices come from", "OKX" in md.ban_message())
+    md.banned_until = _t.time() - 1
+    check("after the ban, data goes back to the main exchange", md.source == "binance")
 
     tmp = Path(tempfile.mkdtemp())
     try:
