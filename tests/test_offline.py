@@ -246,6 +246,11 @@ def test_paper(signals):
     check("opens a position from a firing signal", pos is not None)
     check("no duplicate position for the same symbol+mode",
           broker.open_from_signal(s_up) is None)
+    import copy as _copy
+    other_mode = _copy.copy(s_up)
+    other_mode.mode = "position"
+    check("no second trade on the same coin in another mode",
+          broker.open_from_signal(other_mode) is None and len(broker.positions) == 1)
 
     # walk price to target 1 → partial exit + breakeven stop
     broker.mark_to_market({s_up.symbol: s_up.targets[0] * 1.0001})

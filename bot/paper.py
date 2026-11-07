@@ -213,7 +213,9 @@ class PaperBroker:
         with self._lock:
             return (not self.halted_reason
                     and sig.action == "enter" and sig.direction in ("long", "short")
-                    and self._key(sig.symbol, sig.mode) not in self.positions
+                    # one trade per coin: a swing and a long-term trade on the
+                    # same coin would double the bet on one price move
+                    and not any(p.symbol == sig.symbol for p in self.positions.values())
                     and len(self.positions) < self.risk.max_open_positions
                     and sig.position_size_units > 0)
 
