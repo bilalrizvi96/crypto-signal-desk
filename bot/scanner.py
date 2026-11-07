@@ -12,7 +12,7 @@ import pandas as pd
 
 from . import indicators as ta
 from .config import Config
-from .data import MarketData, SymbolInfo, tf_seconds
+from .data import MarketData, RateLimited, SymbolInfo, tf_seconds
 from .ai_review import AIReviewer
 from .live import LiveTrader
 from .news import NewsEngine
@@ -157,6 +157,8 @@ class Scanner:
 
         try:
             uni = list(self.universe())
+        except RateLimited as exc:
+            return self._keep_last(str(exc))
         except Exception as exc:
             log.error("universe build failed: %s", exc)
             return self._error_result(f"could not reach {self.cfg.universe.exchange}: {exc}")
@@ -213,6 +215,11 @@ class Scanner:
                         bar_advanced.add((info.symbol, tf))
                     self._last_bar_ts[(info.symbol, tf)] = ts
 
+        # a ban that started mid-scan leaves most symbols unpriced; trading
+        # on the few that got through would be acting on a partial picture
+        if self.data.banned_until > time.time() and len(prices) < len(uni) / 2:
+            return self._keep_last(self.data.ban_message())
+
         # ---- execution -----------------------------------------------------
         paper_events = []
         if self.paper:
@@ -264,6 +271,7 @@ class Scanner:
         watching = [s for s in all_signals if s.action == "watch"]
 
         result = {
+            "warning": None,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "scan_number": self.scan_count,
             "duration_seconds": round(time.time() - started, 2),
@@ -428,6 +436,16 @@ class Scanner:
             "candles": {mode: _candles(df) for mode, df in meta["entry_frames"].items()},
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    def _keep_last(self, message: str) -> dict:
+        """Rate-limited: keep showing the last good scan, marked as old."""
+        log.warning("scan skipped: %s", message)
+        with self._lock:
+            last = self._last_result
+            if not last or last.get("error"):
+                return self._error_result(message)
+            self._last_result = {**last, "warning": message + ". Showing the last scan until then."}
+            return self._last_result
 
     def _error_result(self, message: str) -> dict:
         result = {

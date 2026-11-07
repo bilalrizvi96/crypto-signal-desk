@@ -331,6 +331,8 @@ def test_paper(signals):
 class FakeMarketData:
     """Stands in for ccxt: deterministic synthetic candles per symbol."""
 
+    banned_until = 0.0
+
     # (symbol, base, bucket, daily drift, daily vol, seed)
     SYMS = [
         ("BTC/USDT", "BTC", "large", 0.004, 0.008, 1),
@@ -884,6 +886,66 @@ def test_ai_review():
 
 
 # ---------------------------------------------------------------------------
+# 7b2. exchange rate-limit bans
+# ---------------------------------------------------------------------------
+def test_rate_limit():
+    print("\n[7b2] Exchange rate-limit backoff")
+    import shutil
+    import tempfile
+    import time as _t
+    from bot.data import MarketData, RateLimited
+
+    md = MarketData.__new__(MarketData)          # no network: just the backoff logic
+    md.cfg = Config().universe
+    md.banned_until = 0.0
+    calls = []
+    until_ms = int((_t.time() + 600) * 1000)
+
+    def banned(*a, **k):
+        calls.append(1)
+        raise RuntimeError(f'binance 418 {{"code":-1003,"msg":"Way too much request weight used; '
+                           f'IP banned until {until_ms}."}}')
+    try:
+        md._call(banned); ok = False
+    except RateLimited:
+        ok = True
+    check("a ban reply becomes RateLimited", ok)
+    check("the ban end time is read from the reply", abs(md.banned_until - until_ms / 1000) < 1)
+    try:
+        md._call(banned)
+    except RateLimited:
+        pass
+    check("no request is sent while banned", len(calls) == 1)
+    md.banned_until = 0.0
+    try:
+        md._call(lambda: (_ for _ in ()).throw(ValueError("bad symbol")))
+        ok = False
+    except ValueError:
+        ok = True
+    check("ordinary errors are not treated as bans", ok and md.banned_until == 0.0)
+
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        sc = _ai_scanner(None, tmp)
+        good = sc.scan()
+        sc.data.banned_until = _t.time() + 600
+        sc.data.ban_message = lambda: "binance is rate-limiting this server until 12:00 UTC"
+        real = sc.data.build_universe
+        sc.data.build_universe = lambda: (_ for _ in ()).throw(RateLimited(sc.data.ban_message()))
+        sc._universe = []                         # force a rebuild
+        r = sc.scan()
+        check("while banned, the last good scan stays up with a notice",
+              r["generated_at"] == good["generated_at"] and "rate-limiting" in (r.get("warning") or "")
+              and not r.get("error"))
+        sc.data.build_universe = real
+        sc.data.banned_until = 0.0
+        r2 = sc.scan()
+        check("the notice clears once scans work again", r2.get("warning") is None and not r2.get("error"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # 7c. dashboard trading settings and the profit goal
 # ---------------------------------------------------------------------------
 def test_settings_and_goal():
@@ -1110,6 +1172,7 @@ def main():
     test_config_and_gating()
     test_server(result)
     test_ai_review()
+    test_rate_limit()
     test_settings_and_goal()
     test_user_accounts()
     test_postgres()

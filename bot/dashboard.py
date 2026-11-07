@@ -1508,7 +1508,9 @@ function render(){
   const dot=document.getElementById("statusDot");
   const errs=(state.errors||[]);
   document.getElementById("errBox").innerHTML = state.error
-    ? `<div class="err-box"><strong>Scan failed.</strong> ${esc(state.error)}</div>` : "";
+    ? `<div class="err-box"><strong>Scan failed.</strong> ${esc(state.error)}</div>`
+    : state.warning ? `<div class="err-box" style="border-color:rgba(250,178,25,.4);background:rgba(250,178,25,.08)">
+        <strong>Prices paused.</strong> ${esc(state.warning)}</div>` : "";
   dot.className="dot"+(state.error?" err":(errs.length?" stale":""));
 
   document.getElementById("subline").textContent =

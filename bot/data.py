@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -43,6 +44,13 @@ class SymbolInfo:
 BINANCE_PUBLIC_DATA = "https://data-api.binance.vision/api/v3"
 
 
+class RateLimited(RuntimeError):
+    """The exchange has banned or throttled this IP; retrying early extends the ban."""
+
+
+_BAN_UNTIL = re.compile(r"banned until (\d{13})")
+
+
 class MarketData:
     """Thin ccxt wrapper. One instance per process; safe to call from threads."""
 
@@ -78,8 +86,38 @@ class MarketData:
     def load_markets(self):
         with self._lock:
             if not self.exchange.markets:
-                self.exchange.load_markets()
+                self._call(self.exchange.load_markets)
         return self.exchange.markets
+
+    # ------------------------------------------------------------ backoff
+    banned_until: float = 0.0     # epoch seconds; no requests before this
+
+    def _call(self, fn, *args, **kwargs):
+        """Every exchange request goes through here. After a 418/429 the
+        exchange says how long the ban lasts; sending anything sooner only
+        makes it longer, so requests stop until then."""
+        if time.time() < self.banned_until:
+            raise RateLimited(self.ban_message())
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            text = str(exc)
+            m = _BAN_UNTIL.search(text)
+            if m:
+                until = int(m.group(1)) / 1000.0
+            elif " 418 " in text or " 429 " in text or "-1003" in text:
+                until = time.time() + 120
+            else:
+                raise
+            if until > self.banned_until:
+                self.banned_until = until
+                log.warning("exchange rate limit: pausing requests until %s",
+                            time.strftime("%H:%M UTC", time.gmtime(until)))
+            raise RateLimited(self.ban_message()) from exc
+
+    def ban_message(self) -> str:
+        return (f"{self.cfg.exchange} is rate-limiting this server until "
+                f"{time.strftime('%H:%M UTC', time.gmtime(self.banned_until))}")
 
     # ------------------------------------------------------------- universe
     def fetch_tickers(self, ttl: int = 120) -> dict:
@@ -87,7 +125,7 @@ class MarketData:
         with self._lock:
             if self._tickers_cache and now - self._tickers_cache[0] < ttl:
                 return self._tickers_cache[1]
-        tickers = self.exchange.fetch_tickers()
+        tickers = self._call(self.exchange.fetch_tickers)
         with self._lock:
             self._tickers_cache = (now, tickers)
         return tickers
@@ -235,7 +273,7 @@ class MarketData:
             if hit and now - hit[0] < ttl:
                 return hit[1]
 
-        raw = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        raw = self._call(self.exchange.fetch_ohlcv, symbol, timeframe=timeframe, limit=limit)
         if not raw:
             raise RuntimeError(f"no OHLCV returned for {symbol} {timeframe}")
 
@@ -255,7 +293,7 @@ class MarketData:
         return df
 
     def fetch_ticker(self, symbol: str) -> dict:
-        return self.exchange.fetch_ticker(symbol)
+        return self._call(self.exchange.fetch_ticker, symbol)
 
     def clear_cache(self):
         with self._lock:
