@@ -40,6 +40,9 @@ class SymbolInfo:
     asset_class: str = "crypto"   # "crypto" | "stock" | "commodity" | "stablecoin"
 
 
+BINANCE_PUBLIC_DATA = "https://data-api.binance.vision/api/v3"
+
+
 class MarketData:
     """Thin ccxt wrapper. One instance per process; safe to call from threads."""
 
@@ -62,7 +65,14 @@ class MarketData:
         opts = {"enableRateLimit": True, "timeout": 20000}
         if self.cfg.market_type in ("swap", "future"):
             opts["options"] = {"defaultType": "swap"}
+        elif name == "binance":
+            opts["options"] = {"fetchMarkets": ["spot"]}   # skip futures market lists we never use
         ex = klass(opts)
+        if name == "binance" and self.cfg.market_type not in ("swap", "future"):
+            # Binance's market-data-only host: same public data, separate limits.
+            # Shared cloud IPs (Render, etc.) often get banned on api.binance.com
+            # because of other tenants' traffic; this host keeps the scanner alive.
+            ex.urls["api"]["public"] = BINANCE_PUBLIC_DATA
         return ex
 
     def load_markets(self):
