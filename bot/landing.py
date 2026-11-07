@@ -269,8 +269,18 @@ def render_landing() -> str:
     return LANDING
 
 
-def render_admin(summary: dict, signups: list[dict], feedback: list[dict]) -> str:
+def render_admin(summary: dict, signups: list[dict], feedback: list[dict],
+                 users: list[dict] | None = None) -> str:
     e = lambda v: escape(str(v if v is not None else ""))
+    user_rows = "".join(
+        f"<tr><td>{e(u['email'])}</td><td>${u['equity']:,.2f}</td>"
+        f"<td style=\"color:{'#3fb37f' if u['return_pct'] >= 0 else '#e66767'}\">{u['return_pct']:+.2f}%</td>"
+        f"<td>{u['wins']} of {u['closed']}</td><td>{u['open']}</td>"
+        f"<td>{u['settings']['risk_per_trade_pct']:g}% · {u['settings']['max_open_positions']} at once · "
+        f"${u['settings']['max_notional_per_trade']:,.0f} max · goal +{u['settings']['profit_goal_pct']:g}%</td></tr>"
+        for u in (users or [])
+    ) or '<tr><td colspan="6">No user has opened the desk yet.</td></tr>'
+
     votes = "".join(f"<li>{e(k)} — {v}</li>" for k, v in summary["improve_votes"].items()) \
         or "<li>none yet</li>"
     fb_rows = "".join(
@@ -302,9 +312,12 @@ def render_admin(summary: dict, signups: list[dict], feedback: list[dict]) -> st
 <h1>Feedback &amp; sign-ups</h1><a href="/app">← back to the desk</a>
 <div class="tiles" style="margin-top:14px">
   <div class="tile"><b>{summary['signups']}</b><span>sign-ups</span></div>
+  <div class="tile"><b>{len(users or [])}</b><span>practice accounts</span></div>
   <div class="tile"><b>{summary['feedback']}</b><span>feedback replies</span></div>
   <div class="tile"><b>{summary['avg_rating'] if summary['avg_rating'] is not None else '–'}</b><span>average rating / 5</span></div>
 </div>
+<h2>Users' practice accounts</h2><div class="scroll"><table><thead><tr><th>Email</th><th>Balance</th>
+<th>Return</th><th>Trades won</th><th>Open</th><th>Their settings</th></tr></thead><tbody>{user_rows}</tbody></table></div>
 <h2>What people want improved</h2><ul>{votes}</ul>
 <h2>Feedback</h2><div class="scroll"><table><thead><tr><th>When (UTC)</th><th>Email</th><th>Rating</th>
 <th>Improve</th><th>What works</th><th>Message</th></tr></thead><tbody>{fb_rows}</tbody></table></div>

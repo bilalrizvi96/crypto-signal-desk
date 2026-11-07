@@ -16,6 +16,7 @@ from .config import Config
 from .dashboard import render_page
 from .landing import render_admin, render_landing
 from .scanner import Scanner
+from .users import UserBooks
 
 log = logging.getLogger("bot.server")
 
@@ -43,6 +44,22 @@ def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) 
             return False
         return (request.remote_addr in ("127.0.0.1", "::1")
                 and "X-Forwarded-For" not in request.headers)
+
+    if getattr(scanner, "users", False) is None:
+        scanner.users = UserBooks(cfg, accounts)
+    users = getattr(scanner, "users", None)
+
+    def own_user() -> str | None:
+        """The signed-in user whose own practice account this request is
+        about; None for the owner, who sees and runs the main desk."""
+        email = session.get("email")
+        return email if users and email and not admin_allowed() else None
+
+    def personal(state: dict | None) -> dict | None:
+        email = own_user()
+        if not state or not email:
+            return state
+        return {**state, **users.view(email, scanner.last_prices), "viewer": "user"}
 
     @app.before_request
     def require_signup():
@@ -81,7 +98,7 @@ def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) 
 
     @app.get("/app")
     def index():
-        state = scanner.last_result()
+        state = personal(scanner.last_result())
         html = render_page(state, poll_ms=cfg.server.scan_interval_seconds * 1000, live=True)
         return Response(html, mimetype="text/html")
 
@@ -106,7 +123,8 @@ def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) 
         if not admin_allowed():
             return Response("Not allowed. Open this from the machine running the desk, "
                             "or pass ?token=… when ADMIN_TOKEN is set.", status=403)
-        html = render_admin(accounts.summary(), accounts.signups(), accounts.all_feedback())
+        html = render_admin(accounts.summary(), accounts.signups(), accounts.all_feedback(),
+                            users.admin_rows(scanner.last_prices) if users else [])
         return Response(html, mimetype="text/html")
 
     @app.get("/admin/feedback.json")
@@ -114,15 +132,16 @@ def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) 
         if not admin_allowed():
             return jsonify({"error": "not allowed"}), 403
         return jsonify({"summary": accounts.summary(), "signups": accounts.signups(),
-                        "feedback": accounts.all_feedback(), "areas": IMPROVE_AREAS})
+                        "feedback": accounts.all_feedback(), "areas": IMPROVE_AREAS,
+                        "users": users.admin_rows(scanner.last_prices) if users else []})
 
     @app.get("/api/state")
     def api_state():
-        return jsonify(scanner.last_result() or {})
+        return jsonify(personal(scanner.last_result()) or {})
 
     @app.get("/api/scan")
     def api_scan():
-        return jsonify(scanner.scan())
+        return jsonify(personal(scanner.scan()))
 
     @app.get("/api/signals")
     def api_signals():
@@ -190,24 +209,38 @@ def create_app(cfg: Config, scanner: Scanner, accounts: Accounts | None = None) 
 
     @app.get("/api/settings")
     def api_settings():
-        return jsonify({**scanner.settings.view(), "can_edit": admin_allowed()})
+        """A user gets their own account's settings; the owner gets the main
+        desk's, which also decide which modes send exchange orders."""
+        email = own_user()
+        if email:
+            return jsonify({**users.view(email, {})["settings"], "scope": "user", "can_edit": True})
+        return jsonify({**scanner.settings.view(), "scope": "desk", "can_edit": admin_allowed()})
 
     @app.post("/api/settings")
     def api_settings_update():
-        """Change how the bot trades. Owner only: on a hosted site every
-        visitor shares one bot, so a visitor must not be able to resize it."""
-        if not admin_allowed():
-            return jsonify({"ok": False, "error": "only the desk owner can change trading settings"}), 403
         if not request.is_json:
             return jsonify({"ok": False, "error": "expected JSON"}), 415
+        data = request.get_json(silent=True) or {}
+        email = own_user()
         try:
-            view = scanner.settings.update(request.get_json(silent=True) or {})
+            if email:
+                view = {**users.update_settings(email, data), "scope": "user"}
+            elif admin_allowed():
+                view = {**scanner.settings.update(data), "scope": "desk"}
+            else:
+                return jsonify({"ok": False, "error": "only the desk owner can change trading settings"}), 403
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         return jsonify({"ok": True, **view})
 
     @app.post("/api/paper/reset")
     def api_paper_reset():
+        email = own_user()
+        if email:
+            users.reset(email)
+            return jsonify({"ok": True})
+        if not admin_allowed():
+            return jsonify({"ok": False, "error": "only the desk owner can reset the desk"}), 403
         if not scanner.paper:
             return jsonify({"ok": False, "error": "paper trading is disabled"}), 400
         scanner.paper.reset()
@@ -247,6 +280,7 @@ def scan_loop(scanner: Scanner, interval: int, stop_event: threading.Event):
 
 def serve(cfg: Config):
     scanner = Scanner(cfg)
+    app = create_app(cfg, scanner)      # attaches the users' accounts before the first scan
     # the loop runs the first scan straight away; serving starts at once so a
     # host's port check passes while that scan is still downloading candles
     stop_event = threading.Event()
@@ -258,7 +292,6 @@ def serve(cfg: Config):
     )
     thread.start()
 
-    app = create_app(cfg, scanner)
     url = f"http://{cfg.server.host}:{cfg.server.port}"
     print(f"\n  Dashboard →  {url}\n")
     if cfg.server.open_browser:

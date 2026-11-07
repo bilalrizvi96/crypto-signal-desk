@@ -62,35 +62,45 @@ class DeskSettings:
         return self.view()
 
     def _apply(self, data: dict):
-        if not isinstance(data, dict):
-            raise ValueError("settings must be an object")
-        changes = []
-        for name, (section, kind, lo, hi) in NUMBERS.items():
-            if name not in data:
-                continue
-            try:
-                value = kind(float(data[name]))
-            except (TypeError, ValueError):
-                raise ValueError(f"{name} must be a number") from None
-            if not lo <= value <= hi:
-                raise ValueError(f"{name} must be between {lo:g} and {hi:g}")
-            changes.append((getattr(self.cfg, section), name, value))
-        for name, section in FLAGS.items():
-            if name in data:
-                changes.append((getattr(self.cfg, section), name, bool(data[name])))
-        if "live_modes" in data:
-            modes = data["live_modes"]
-            if not isinstance(modes, list) or any(m not in MODES for m in modes):
-                raise ValueError(f"live_modes must be a list drawn from {', '.join(MODES)}")
-            changes.append((self.cfg.live, "modes", [m for m in MODES if m in modes]))
-        # validate everything before changing anything
-        for target, name, value in changes:
+        for target, name, value in parse_changes(data, self.cfg.risk, self.cfg.live):
             setattr(target, name, value)
 
 
-def goal_status(cfg: Config, paper_stats: dict | None) -> dict:
-    """Progress of the practice account toward the profit goal."""
-    target = cfg.risk.profit_goal_pct
+def parse_changes(data: dict, risk, live=None) -> list[tuple[object, str, object]]:
+    """Validate a settings update into (target, field, value) changes.
+    Nothing is applied here, so a half-bad update changes nothing. live is
+    None for a user's own account, which never sends exchange orders."""
+    if not isinstance(data, dict):
+        raise ValueError("settings must be an object")
+    changes = []
+    for name, (_, kind, lo, hi) in NUMBERS.items():
+        if name not in data:
+            continue
+        try:
+            value = kind(float(data[name]))
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be a number") from None
+        if not lo <= value <= hi:
+            raise ValueError(f"{name} must be between {lo:g} and {hi:g}")
+        changes.append((risk, name, value))
+    for name in FLAGS:
+        if name in data:
+            changes.append((risk, name, bool(data[name])))
+    if "live_modes" in data and live is not None:
+        modes = data["live_modes"]
+        if not isinstance(modes, list) or any(m not in MODES for m in modes):
+            raise ValueError(f"live_modes must be a list drawn from {', '.join(MODES)}")
+        changes.append((live, "modes", [m for m in MODES if m in modes]))
+    return changes
+
+
+def risk_view(risk) -> dict:
+    return {name: getattr(risk, name) for name in (*NUMBERS, *FLAGS)}
+
+
+def goal_status(risk, paper_stats: dict | None) -> dict:
+    """Progress of a practice account toward its profit goal."""
+    target = risk.profit_goal_pct
     if not target or not paper_stats:
         return {"enabled": False}
     ret = paper_stats.get("total_return_pct") or 0.0
@@ -98,5 +108,5 @@ def goal_status(cfg: Config, paper_stats: dict | None) -> dict:
     return {
         "enabled": True, "target_pct": target, "return_pct": ret,
         "progress_pct": round(max(0.0, min(100.0, ret / target * 100.0)), 1),
-        "reached": reached, "locked": reached and cfg.risk.lock_at_goal,
+        "reached": reached, "locked": reached and risk.lock_at_goal,
     }

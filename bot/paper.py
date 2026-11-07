@@ -90,8 +90,11 @@ class ClosedTrade:
 
 
 class PaperBroker:
-    def __init__(self, risk: RiskCfg, path: Path | None = None):
+    def __init__(self, risk: RiskCfg, path: Path | None = None, persist: bool = True):
+        """persist=False keeps the broker in memory; its owner stores
+        to_state() somewhere else (a user's account lives in the database)."""
         self.risk = risk
+        self.persist = persist
         self.path = path or (STATE_DIR / "paper_state.json")
         self._lock = threading.RLock()
         self.starting_equity = risk.account_equity
@@ -106,13 +109,18 @@ class PaperBroker:
 
     # ------------------------------------------------------------ storage
     def _load(self):
-        if not self.path.exists():
+        if not self.persist or not self.path.exists():
             return
         try:
             data = json.loads(self.path.read_text())
         except Exception as exc:
             log.warning("could not read paper state: %s", exc)
             return
+        self.load_state(data)
+        log.info("paper state loaded: %d open, %d closed",
+                 len(self.positions), len(self.closed))
+
+    def load_state(self, data: dict):
         with self._lock:
             self.starting_equity = data.get("starting_equity", self.starting_equity)
             self.cash = data.get("cash", self.cash)
@@ -124,12 +132,10 @@ class PaperBroker:
             self.day_start_equity = data.get("day_start_equity", self.starting_equity)
             self.day_stamp = data.get("day_stamp", self.day_stamp)
             self.halted_reason = data.get("halted_reason")
-        log.info("paper state loaded: %d open, %d closed",
-                 len(self.positions), len(self.closed))
 
-    def save(self):
+    def to_state(self) -> dict:
         with self._lock:
-            payload = {
+            return {
                 "starting_equity": self.starting_equity,
                 "cash": self.cash,
                 "positions": {k: v.to_dict() for k, v in self.positions.items()},
@@ -140,6 +146,11 @@ class PaperBroker:
                 "halted_reason": self.halted_reason,
                 "saved_at": _now(),
             }
+
+    def save(self):
+        if not self.persist:
+            return
+        payload = self.to_state()
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(self.path)
@@ -206,14 +217,16 @@ class PaperBroker:
                     and len(self.positions) < self.risk.max_open_positions
                     and sig.position_size_units > 0)
 
-    def open_from_signal(self, sig) -> PaperPosition | None:
-        """sig is a strategy.Signal. Returns the position if one was opened."""
+    def open_from_signal(self, sig, units: float | None = None) -> PaperPosition | None:
+        """sig is a strategy.Signal; units overrides its size (a user's own
+        risk settings). Returns the position if one was opened."""
+        units = sig.position_size_units if units is None else units
         with self._lock:
-            if not self.can_open(sig):
+            if not self.can_open(sig) or units <= 0:
                 return None
             key = self._key(sig.symbol, sig.mode)
 
-            notional = sig.position_size_units * sig.entry
+            notional = units * sig.entry
             fee = self._fee(notional)
             self.cash -= fee
 
@@ -227,8 +240,8 @@ class PaperBroker:
                 stop=sig.stop,
                 initial_stop=sig.stop,
                 targets=list(sig.targets),
-                size_units=sig.position_size_units,
-                remaining_units=sig.position_size_units,
+                size_units=units,
+                remaining_units=units,
                 notional=notional,
                 opened_at=_now(),
                 entry_tf=sig.timeframes.get("entry", "?"),

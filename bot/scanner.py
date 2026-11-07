@@ -53,6 +53,8 @@ class Scanner:
         self.live = LiveTrader(cfg.live, cfg.risk) if cfg.live.enabled else None
         self.ai = AIReviewer(cfg.ai) if cfg.ai.enabled else None
         self.settings = DeskSettings(cfg)
+        self.users = None          # UserBooks, attached by the server (it owns the storage)
+        self.last_prices: dict[str, float] = {}
         self._lock = threading.RLock()
         self._last_result: dict | None = None
         self._universe: list[SymbolInfo] = []
@@ -161,9 +163,12 @@ class Scanner:
 
         # an open paper position must keep getting prices even after its coin
         # drops out of the volume ranking, or its stop and target never trigger
-        if self.paper:
+        held = {p.symbol for p in self.paper.positions.values()} if self.paper else set()
+        if self.users:
+            held |= self.users.symbols()
+        if held:
             scanned = {s.symbol for s in uni}
-            for sym in sorted({p.symbol for p in self.paper.positions.values()} - scanned):
+            for sym in sorted(held - scanned):
                 try:
                     info = self.data.symbol_info(sym)
                 except Exception as exc:
@@ -218,27 +223,32 @@ class Scanner:
         self._attach_success(all_signals)
 
         # at the profit goal, bank the practice gains and open nothing new
-        goal = goal_status(self.cfg, self.paper.stats(prices) if self.paper else None)
+        goal = goal_status(self.cfg.risk, self.paper.stats(prices) if self.paper else None)
         if goal.get("locked") and self.paper and self.paper.positions:
             for t in self.paper.close_all(prices, "profit goal reached"):
                 paper_events.append(("close", t))
-            goal = goal_status(self.cfg, self.paper.stats(prices))
+            goal = goal_status(self.cfg.risk, self.paper.stats(prices))
 
         # every entry goes through the AI review first; only approved ones trade
         entries = sorted((s for s in all_signals if s.action == "enter"),
                          key=lambda s: -abs(s.score))
-        approved = [] if goal.get("locked") else self._ai_gate(entries)
+        approved = self._ai_gate(entries)
 
         if self.paper:
-            for sig in approved:
+            for sig in ([] if goal.get("locked") else approved):
                 self.paper.open_from_signal(sig)
             self.paper.save()
 
         live_records = []
         if self.live:
             halted = bool(self.paper and self.paper.halted_reason)
-            for sig in approved:
+            for sig in ([] if goal.get("locked") else approved):
                 live_records.append(self.live.submit(sig, halted=halted).to_dict())
+
+        # every signed-up user's own practice account, with their own sizing
+        if self.users:
+            self.users.on_scan(prices, bar_advanced, approved)
+        self.last_prices = prices
 
         best_scalp = sorted((s for s in all_signals if s.mode == "scalp" and s.scalp_fit),
                             key=lambda s: -s.scalp_fit["score"])[:5]
@@ -326,7 +336,8 @@ class Scanner:
         approved = []
         for sig in entries:
             could_trade = ((self.paper and self.paper.can_open(sig))
-                           or (self.live and self.live.wants(sig)))
+                           or (self.live and self.live.wants(sig))
+                           or (self.users and self.users.any_can_open(sig)))
             verdict = self.ai.verdict_for(sig)
             if verdict is None and could_trade:
                 self.ai.request(sig, self._ai_context(sig))

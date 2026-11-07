@@ -7,6 +7,7 @@ anyone can type any address — so do not put anything private behind it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -58,6 +59,7 @@ class Accounts:
         self.signups_path = d / "signups.jsonl"
         self.feedback_path = d / "feedback.jsonl"
         self.secret_path = d / "session_secret.json"
+        self.users_dir = d / "users"
 
     def session_secret(self) -> str:
         """Stable across restarts so signed-in browsers stay signed in."""
@@ -100,6 +102,27 @@ class Accounts:
     def all_feedback(self) -> list[dict]:
         return _read(self.feedback_path)
 
+    # ---- each user's own practice account and settings ----
+    def load_users(self) -> dict[str, dict]:
+        out = {}
+        if not self.users_dir.exists():
+            return out
+        for f in self.users_dir.glob("*.json"):
+            try:
+                row = json.loads(f.read_text())
+                out[row["email"]] = row["data"]
+            except (OSError, ValueError, KeyError):
+                continue
+        return out
+
+    def save_users(self, rows: dict[str, dict]):
+        self.users_dir.mkdir(exist_ok=True)
+        for email, data in rows.items():
+            name = hashlib.sha256(email.encode()).hexdigest()[:24]
+            tmp = self.users_dir / f"{name}.tmp"
+            tmp.write_text(json.dumps({"email": email, "data": data}))
+            tmp.replace(self.users_dir / f"{name}.json")
+
     def summary(self) -> dict:
         fb = self.all_feedback()
         ratings = [f["rating"] for f in fb if f.get("rating")]
@@ -125,6 +148,8 @@ class PgAccounts(Accounts):
         "CREATE TABLE IF NOT EXISTS feedback (id SERIAL PRIMARY KEY, email TEXT, "
         "at TIMESTAMPTZ NOT NULL, rating INT, liked TEXT, improve TEXT, message TEXT)",
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS user_state (email TEXT PRIMARY KEY, data TEXT NOT NULL, "
+        "updated_at TIMESTAMPTZ NOT NULL)",
     )
 
     def __init__(self, url: str):
@@ -198,6 +223,30 @@ class PgAccounts(Accounts):
             out.append({"email": e, "at": at.isoformat(), "rating": r, "liked": l or "",
                         "improve": improve, "message": m or ""})
         return out
+
+
+    def load_users(self) -> dict[str, dict]:
+        out = {}
+        for email, data in self._run("SELECT email, data FROM user_state"):
+            try:
+                out[email] = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    def save_users(self, rows: dict[str, dict]):
+        """One connection for the whole batch: this runs after every scan."""
+        if not rows:
+            return
+        import pg8000.native
+        conn = pg8000.native.Connection(**self._params)
+        try:
+            for email, data in rows.items():
+                conn.run("INSERT INTO user_state (email, data, updated_at) VALUES (:e, :d, now()) "
+                         "ON CONFLICT (email) DO UPDATE SET data = :d, updated_at = now()",
+                         e=email, d=json.dumps(data))
+        finally:
+            conn.close()
 
 
 def make_accounts() -> Accounts:

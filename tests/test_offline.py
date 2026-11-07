@@ -921,12 +921,12 @@ def test_settings_and_goal():
 
         # goal maths
         cfg.risk.profit_goal_pct, cfg.risk.lock_at_goal = 20, True
-        g = goal_status(cfg, {"total_return_pct": 5.0})
+        g = goal_status(cfg.risk, {"total_return_pct": 5.0})
         check("goal progress is a share of the target", g["progress_pct"] == 25.0 and not g["reached"])
-        g = goal_status(cfg, {"total_return_pct": 21.0})
+        g = goal_status(cfg.risk, {"total_return_pct": 21.0})
         check("reaching the goal locks when lock is on", g["reached"] and g["locked"])
         cfg.risk.profit_goal_pct = 0
-        check("a 0% goal is off", goal_status(cfg, {"total_return_pct": 50})["enabled"] is False)
+        check("a 0% goal is off", goal_status(cfg.risk, {"total_return_pct": 50})["enabled"] is False)
 
         # at the goal the scanner banks open trades and opens nothing new
         sc = _ai_scanner(None, tmp)
@@ -955,10 +955,98 @@ def test_settings_and_goal():
         check("bad settings get a 400", c.post("/api/settings", json={"max_open_positions": 99}).status_code == 400)
         r = c.post("/api/settings", json={"max_open_positions": 2},
                    headers={"X-Forwarded-For": "8.8.8.8"})
-        check("a remote visitor cannot change settings", r.status_code == 403
-              and sc.cfg.risk.max_open_positions == 7)
+        check("a remote visitor's save changes only their own account, not the desk",
+              r.status_code == 200 and r.get_json()["scope"] == "user"
+              and sc.cfg.risk.max_open_positions == 7
+              and sc.users.get("owner@example.com").risk.max_open_positions == 2)
         html = c.get("/app").data
         check("dashboard has the bot settings panel", b'id="botPanel"' in html)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 7d. every user's own practice account
+# ---------------------------------------------------------------------------
+def test_user_accounts():
+    print("\n[7d] Separate practice accounts per user")
+    import shutil
+    import tempfile
+    from bot.accounts import Accounts
+    from bot.server import create_app
+    from bot.users import UserBooks, size_for
+
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        sc = _ai_scanner(None, tmp)
+        acc = Accounts(tmp)
+        sc.users = UserBooks(sc.cfg, acc)
+        a, b = sc.users.get("a@example.com"), sc.users.get("b@example.com")
+        sc.users.update_settings("b@example.com", {"risk_per_trade_pct": 2, "max_notional_per_trade": 10000,
+                                                   "max_open_positions": 2})
+        check("a user's settings don't touch the desk or other users",
+              sc.cfg.risk.risk_per_trade_pct == 1.0 and a.risk.risk_per_trade_pct == 1.0
+              and b.risk.risk_per_trade_pct == 2.0)
+        try:
+            sc.users.update_settings("a@example.com", {"live_modes": ["scalp"], "risk_per_trade_pct": 1.5})
+            ok = sc.cfg.live.modes == ["swing", "position"]
+        except ValueError:
+            ok = False
+        check("a user cannot change which modes send exchange orders", ok)
+
+        sc.scan()
+        check("each user's account opens trades from the shared signals",
+              a.paper.positions and b.paper.positions)
+        check("each user's trade-count limit applies to them alone", len(b.paper.positions) <= 2
+              and len(a.paper.positions) >= len(b.paper.positions))
+        pa = next(iter(a.paper.positions.values()))
+        pb = b.paper.positions.get(f"{pa.symbol}|{pa.mode}")
+        if pb:
+            check("sizes follow each user's own risk % (2% vs 1.5%)",
+                  abs(pb.size_units / pa.size_units - 2 / 1.5) < 1e-6,
+                  f"{pa.size_units:.4g} vs {pb.size_units:.4g}")
+        sig_like = type("S", (), {"entry": 100.0, "stop": 95.0})()
+        # 1.5% of $1,000 = $15 at $5 a unit = 3 units ($300), capped at $250 = 2.5 units
+        check("user sizing risks their % and respects their cap",
+              abs(size_for(sig_like, a.risk) - 2.5) < 1e-9, str(size_for(sig_like, a.risk)))
+
+        sc.users.reset("a@example.com")
+        check("resetting one user's account leaves the others", not a.paper.positions and b.paper.positions)
+
+        again = UserBooks(sc.cfg, Accounts(tmp))
+        check("user accounts and settings survive a restart",
+              set(again.books) == {"a@example.com", "b@example.com"}
+              and again.books["b@example.com"].risk.risk_per_trade_pct == 2.0
+              and len(again.books["b@example.com"].paper.positions) == len(b.paper.positions))
+
+        # one user's goal locks only them
+        b.risk.profit_goal_pct = 0.0001
+        b.paper.cash = b.paper.starting_equity * 1.5
+        sc.scan()
+        check("a user at their goal is banked and paused", not b.paper.positions)
+        check("other users keep trading", bool(a.paper.positions))
+
+        rows = sc.users.admin_rows({})
+        check("admin sees every user's account", {r["email"] for r in rows} == {"a@example.com", "b@example.com"})
+
+        # over HTTP: a visitor sees their own account, the owner the desk
+        app = create_app(sc.cfg, sc, acc)
+        c = app.test_client()
+        c.post("/api/signup", json={"email": "a@example.com"})
+        remote = {"X-Forwarded-For": "8.8.8.8"}
+        mine = c.get("/api/state", headers=remote).get_json()
+        desk = c.get("/api/state").get_json()
+        check("a visitor's dashboard shows their own practice account",
+              mine.get("viewer") == "user"
+              and len(mine["paper"]["positions"]) == len(a.paper.positions)
+              and mine["settings"]["risk_per_trade_pct"] == 1.5)
+        check("the owner's dashboard shows the main desk", desk.get("viewer") is None
+              and desk["paper"]["open_positions"] == len(sc.paper.positions))
+        c.post("/api/paper/reset", headers=remote)
+        check("a visitor's reset clears only their account",
+              not a.paper.positions and len(sc.paper.positions) == desk["paper"]["open_positions"])
+        html = c.get("/admin/feedback").data
+        check("admin page lists users' practice accounts", b"b@example.com" in html and b"practice accounts" in html)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -989,10 +1077,15 @@ def test_postgres():
         s = a.summary()
         check("pg: summary counts it", s["signups"] == 1 and s["avg_rating"] == 5.0
               and s["improve_votes"] == {"wallet": 1})
+        a._run("DELETE FROM user_state")
+        a.save_users({"u@example.com": {"paper": {"cash": 1010.5}, "settings": {"risk_per_trade_pct": 2}}})
+        a.save_users({"u@example.com": {"paper": {"cash": 1020.0}, "settings": {"risk_per_trade_pct": 2}}})
+        check("pg: a user's account is saved and updated in place",
+              a.load_users() == {"u@example.com": {"paper": {"cash": 1020.0}, "settings": {"risk_per_trade_pct": 2}}})
         k1 = a.session_secret()
         check("pg: session secret survives a restart", PgAccounts(url).session_secret() == k1)
     finally:
-        for t in ("signups", "feedback", "settings"):
+        for t in ("signups", "feedback", "settings", "user_state"):
             a._run(f"DROP TABLE IF EXISTS {t}")
         if saved_secret is not None:
             os.environ["SECRET_KEY"] = saved_secret
@@ -1013,6 +1106,7 @@ def main():
     test_server(result)
     test_ai_review()
     test_settings_and_goal()
+    test_user_accounts()
     test_postgres()
 
     print("\n" + "═" * 74)

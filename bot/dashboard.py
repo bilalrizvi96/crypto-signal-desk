@@ -432,7 +432,7 @@ PAGE = r"""<!doctype html>
           if the stop is hit, and what you make at each target. Saved in this browser only.</div>
       </div>
       <div class="panel wallet" id="botPanel">
-        <h2>Bot settings <span class="c">how the bot trades</span></h2>
+        <h2>Bot settings <span class="c" id="bScope">how the bot trades</span></h2>
         <div class="row2">
           <div><label for="bRisk">Risk per trade (%)</label>
             <input id="bRisk" type="number" min="0.1" max="5" step="0.1" inputmode="decimal"></div>
@@ -441,12 +441,12 @@ PAGE = r"""<!doctype html>
         </div>
         <label for="bNotional">Most money in one trade (USDT)</label>
         <input id="bNotional" type="number" min="5" step="any" inputmode="decimal">
-        <label>Send testnet orders for</label>
+        <div id="bModesRow"><label>Send testnet orders for</label>
         <div class="modes" id="bModes">
           <label><input type="checkbox" value="scalp"> Scalp</label>
           <label><input type="checkbox" value="swing"> Swing</label>
           <label><input type="checkbox" value="position"> Long-term</label>
-        </div>
+        </div></div>
         <div class="row2" style="align-items:end">
           <div><label for="bGoal">Profit goal (%)</label>
             <input id="bGoal" type="number" min="0" max="1000" step="1" inputmode="decimal"></div>
@@ -1302,7 +1302,7 @@ function renderWalletHint(){
 }
 
 /* ---------- bot settings (saved on the server, used by the bot) ---------- */
-let botLoaded=false, botCanEdit=false;
+let botLoaded=false, botCanEdit=false, botScope="desk";
 const bEl=id=>document.getElementById(id);
 function fillBot(v){
   bEl("bRisk").value=v.risk_per_trade_pct; bEl("bOpen").value=v.max_open_positions;
@@ -1326,12 +1326,17 @@ function renderBotHint(){
     (${Math.round(inUse/eq*100)}%). If every open trade hit its stop together you'd lose about
     <strong>${fmtUsd(worst)}</strong> (${(worst/eq*100).toFixed(1)}%).
     ${f.risk_per_trade_pct>2?`<div style="color:#ffb694;margin-top:4px">Above 2% per trade, a short losing streak takes a big bite.</div>`:""}
-    <div style="margin-top:6px">${botCanEdit?"Applies from the next scan.":"Only the desk owner can change these."}</div>`;
+    <div style="margin-top:6px">${!botCanEdit?"Only the desk owner can change these."
+      :botScope==="user"?"These are yours alone: they size the trades in your own practice account, from the next scan."
+      :"Applies from the next scan."}</div>`;
 }
 async function loadBot(){
   try{
     const r=await fetch("/api/settings",{cache:"no-store"}); if(!r.ok) return;
-    const v=await r.json(); botCanEdit=!!v.can_edit; botLoaded=true; fillBot(v);
+    const v=await r.json(); botCanEdit=!!v.can_edit; botScope=v.scope||"desk"; botLoaded=true;
+    bEl("bModesRow").style.display=botScope==="user"?"none":"";
+    bEl("bScope").textContent=botScope==="user"?"your practice account":"how the bot trades";
+    fillBot(v);
     document.querySelectorAll("#botPanel input,#bSave").forEach(x=>x.disabled=!botCanEdit);
   }catch(e){}
 }
