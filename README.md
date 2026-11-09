@@ -138,6 +138,26 @@ For every signal:
 Signals with less than 0.8R to the first target are downgraded to "watch" — the
 setup may be real but you are not being paid enough to take it yet.
 
+### 6. Has Claude research every trade first
+
+Before anything opens, paper or exchange, Claude Opus 5.5 reviews the setup.
+It gets the five-timeframe read, every indicator vote, the levels, the
+headlines, the fees against the stop, and the desk's own recent record for
+that mode. It searches the live web for news on the asset and for scheduled
+macro events, then returns **take or skip** with a confidence score, its
+reasons for and against, and the news it relied on. Each card shows the verdict.
+
+- A trade opens only on **take at 60% confidence or more** (`ai.min_confidence`).
+- **Fail-closed:** no `ANTHROPIC_API_KEY`, an API error, a refusal or a spent
+  daily budget means the trade is skipped, never taken blindly.
+- Reviews run in the background, so a new setup trades on the next scan
+  once its review lands. A verdict is reused for 45 minutes.
+- **Cost:** roughly $0.15–0.30 per review with web search, capped at 30 reviews
+  a day (`ai.max_reviews_per_day`). The dashboard shows the day's estimate;
+  your Anthropic console has the real bill.
+- The practice panel tracks how AI-approved trades actually do. That's how you
+  find out whether the reviews help. A second opinion is not a guarantee.
+
 ### 6. Trades it on paper
 
 Every fired signal opens a virtual position. Half comes off at target 1 and the
@@ -212,6 +232,45 @@ server:
 Raising `min_score` is the single most effective adjustment. The defaults are
 deliberately on the permissive side so you can see the machinery working; once
 you have watched it for a while you will probably want 65–70 for scalps.
+
+---
+
+## Deploy free on Render
+
+`render.yaml` describes the whole service, so deploying is mostly clicking.
+
+1. **Make a free Postgres database** at [neon.tech](https://neon.tech) (or
+   Supabase) and copy its connection string (`postgresql://…`). Sign-ups and
+   feedback are stored there, because Render's free disk is wiped on restart.
+2. In [Render](https://render.com): **New → Blueprint**, connect GitHub and
+   give Render access to this repo, then pick it. Render reads `render.yaml`.
+3. When asked for `DATABASE_URL`, paste the string from step 1. `SECRET_KEY`
+   and `ADMIN_TOKEN` are generated for you.
+4. Deploy. The site comes up at `https://crypto-signal-desk-xxxx.onrender.com`.
+   Read feedback at `/admin/feedback?token=<ADMIN_TOKEN>` (the value is under
+   the service's **Environment** tab).
+
+Notes:
+
+- The service runs in **Frankfurt**. Binance refuses API calls from US servers.
+- **The free plan sleeps** after 15 minutes without visitors. The next visit
+  wakes it in about a minute, and the first market scan takes another ~30s.
+- **The public site never trades.** `BOT_LIVE_ENABLED=false` overrides
+  `config.yaml`. Don't put exchange keys on a hosted service.
+- **The practice account resets** on every restart or deploy.
+
+### Environment variables
+
+| Variable | What it does |
+|---|---|
+| `PORT`, `BOT_HOST` | Where the server listens (set by the host / `0.0.0.0`) |
+| `DATABASE_URL` | Postgres for sign-ups and feedback; files under `state/` if unset |
+| `SECRET_KEY` | Signs login cookies; keeps users signed in across restarts |
+| `ADMIN_TOKEN` | Password for `/admin/feedback`; without it, only localhost gets in |
+| `BOT_LIVE_ENABLED` | `false` forces live trading off, whatever `config.yaml` says |
+| `BOT_OPEN_BROWSER` | `false` on servers |
+| `BOT_STATE_DIR` | Where the paper state and order log are written |
+| `EXCHANGE_API_KEY`, `EXCHANGE_API_SECRET`, `LIVE_CONFIRM` | Local live trading only; put them in `.env` (git-ignored) |
 
 ---
 

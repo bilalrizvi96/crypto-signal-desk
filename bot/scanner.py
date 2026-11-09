@@ -12,11 +12,14 @@ import pandas as pd
 
 from . import indicators as ta
 from .config import Config
-from .data import MarketData, SymbolInfo, tf_seconds
+from .data import MarketData, RateLimited, SymbolInfo, tf_seconds
+from .ai_review import AIReviewer
+from .history import HistoryChecker
 from .live import LiveTrader
 from .news import NewsEngine
-from .paper import PaperBroker
-from .strategy import build_signal
+from .paper import PaperBroker, prior_success
+from .settings import DeskSettings, goal_status
+from .strategy import build_signal, scalp_fit
 
 log = logging.getLogger("bot.scanner")
 
@@ -28,6 +31,20 @@ def _tf_rank(tf: str) -> int:
         return 10 ** 9
 
 
+def _candles(df: pd.DataFrame, n: int = 60) -> list[list[float]]:
+    """Last n entry-timeframe bars as [time_ms, open, high, low, close] for the chart."""
+    tail = df.iloc[-n:]
+    return [[int(ts.timestamp() * 1000), float(r.open), float(r.high), float(r.low), float(r.close)]
+            for ts, r in zip(tail.index, tail.itertuples())]
+
+
+def _brief(sig) -> dict:
+    return {"symbol": sig.symbol, "base": sig.base, "name": sig.name,
+            "asset_class": sig.asset_class, "price": sig.price,
+            "action": sig.action, "direction": sig.direction, "score": sig.score,
+            "fit": sig.scalp_fit}
+
+
 class Scanner:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -35,23 +52,32 @@ class Scanner:
         self.news = NewsEngine(cfg.news)
         self.paper = PaperBroker(cfg.risk) if cfg.paper_enabled else None
         self.live = LiveTrader(cfg.live, cfg.risk) if cfg.live.enabled else None
+        self.ai = AIReviewer(cfg.ai) if cfg.ai.enabled else None
+        self.history = HistoryChecker(cfg.history, cfg.risk) if cfg.history.enabled else None
+        self.settings = DeskSettings(cfg)
+        self.users = None          # UserBooks, attached by the server (it owns the storage)
+        self.last_prices: dict[str, float] = {}
         self._lock = threading.RLock()
         self._last_result: dict | None = None
         self._universe: list[SymbolInfo] = []
         self._universe_at: float = 0.0
-        self._last_bar_ts: dict[str, pd.Timestamp] = {}
+        self._universe_src: str = ""
+        self._last_bar_ts: dict[tuple[str, str], pd.Timestamp] = {}
         self.scan_count = 0
 
     # ------------------------------------------------------------ universe
     def universe(self, ttl: int = 900) -> list[SymbolInfo]:
         now = time.time()
+        source = getattr(self.data, "source", "")
         with self._lock:
-            if self._universe and now - self._universe_at < ttl:
+            # rebuild when the data source switched: the backup lists other coins
+            if self._universe and now - self._universe_at < ttl and self._universe_src == source:
                 return self._universe
         uni = self.data.build_universe()
         with self._lock:
             self._universe = uni
             self._universe_at = now
+            self._universe_src = source
         return uni
 
     # ---------------------------------------------------------- per-symbol
@@ -61,11 +87,15 @@ class Scanner:
             out.append(("scalp", self.cfg.scalp))
         if self.cfg.swing.enabled:
             out.append(("swing", self.cfg.swing))
+        if self.cfg.position.enabled:
+            out.append(("position", self.cfg.position))
         return out
 
-    def _analyse_symbol(self, info: SymbolInfo) -> tuple[list, dict]:
-        """Returns (signals, meta) for one symbol across all enabled modes."""
-        signals, frames_cache = [], {}
+    def _analyse_symbol(self, info: SymbolInfo, check_all: bool = False) -> tuple[list, dict]:
+        """Returns (signals, meta) for one symbol across all enabled modes.
+        The history check runs for firing signals, or for every directional
+        one with check_all (the detail page)."""
+        signals, frames_cache, entry_frames = [], {}, {}
         coin_news = (
             self.news.for_coin(info.base).to_dict() if self.cfg.news.enabled else {}
         )
@@ -77,10 +107,14 @@ class Scanner:
                                  ("confirm", mcfg.confirm_tf),
                                  ("bias", mcfg.bias_tf)):
                     if tf in frames_cache:
+                        if role == "entry" and len(frames_cache[tf]) < 210:
+                            frames = {}
+                            break
                         frames[role] = frames_cache[tf]
                         continue
                     raw = self.data.fetch_ohlcv(info.symbol, tf, mcfg.limit)
-                    if len(raw) < 210:
+                    need = 210 if role == "entry" else min(210, mcfg.min_htf_bars)
+                    if len(raw) < need:
                         log.debug("%s %s: only %d candles, skipping mode %s",
                                   info.symbol, tf, len(raw), mode)
                         frames = {}
@@ -105,22 +139,39 @@ class Scanner:
                     change_24h=info.change_24h,
                     quote_volume=info.quote_volume,
                 )
+                sig.name = info.name
+                sig.asset_class = info.asset_class
+                if mode == "scalp":
+                    sig.scalp_fit = scalp_fit(sig, info.spread_pct)
+                if self.history and sig.direction in ("long", "short") and (
+                        sig.action == "enter" or check_all):
+                    sig.history = self.history.check(sig, self._history_frames(info, mcfg, frames), mcfg)
                 signals.append(sig)
+                entry_frames[mode] = frames["entry"]
             except Exception as exc:
                 log.warning("analysis failed for %s (%s): %s", info.symbol, mode, exc)
                 log.debug(traceback.format_exc())
 
-        entry_tf = self.cfg.scalp.entry_tf if self.cfg.scalp.enabled else self.cfg.swing.entry_tf
-        last_ts = None
-        if entry_tf in frames_cache:
-            last_ts = frames_cache[entry_tf].index[-1]
-
         meta = {
             "price": info.last,
-            "last_bar_ts": last_ts,
+            # newest bar per timeframe, so each paper position counts its own bars
+            "last_bar_ts": {tf: df.index[-1] for tf, df in frames_cache.items()},
             "news": coin_news,
+            "entry_frames": entry_frames,
         }
         return signals, meta
+
+    def _history_frames(self, info: SymbolInfo, mcfg, frames: dict) -> dict:
+        """A longer stretch of the entry timeframe for the history replay;
+        the scan's own frames if the exchange gives no more (OKX caps at 300)."""
+        try:
+            deep = self.data.fetch_ohlcv(info.symbol, mcfg.entry_tf, self.cfg.history.lookback_bars)
+        except Exception as exc:
+            log.debug("deep history for %s unavailable: %s", info.symbol, exc)
+            return frames
+        if len(deep) <= len(frames["entry"]):
+            return frames
+        return {**frames, "entry": ta.enrich(deep)}
 
     # --------------------------------------------------------------- scan
     def scan(self) -> dict:
@@ -128,10 +179,28 @@ class Scanner:
         self.scan_count += 1
 
         try:
-            uni = self.universe()
+            uni = list(self.universe())
+        except RateLimited as exc:
+            return self._keep_last(str(exc))
         except Exception as exc:
             log.error("universe build failed: %s", exc)
             return self._error_result(f"could not reach {self.cfg.universe.exchange}: {exc}")
+
+        # an open paper position must keep getting prices even after its coin
+        # drops out of the volume ranking, or its stop and target never trigger
+        held = {p.symbol for p in self.paper.positions.values()} if self.paper else set()
+        if self.users:
+            held |= self.users.symbols()
+        if held:
+            scanned = {s.symbol for s in uni}
+            for sym in sorted(held - scanned):
+                try:
+                    info = self.data.symbol_info(sym)
+                except Exception as exc:
+                    log.warning("could not price open position %s: %s", sym, exc)
+                    continue
+                if info:
+                    uni.append(info)
 
         if self.cfg.news.enabled:
             try:
@@ -163,29 +232,58 @@ class Scanner:
                     )
                     mark = fastest.price
                 prices[info.symbol] = mark
-                ts = meta.get("last_bar_ts")
-                if ts is not None:
-                    prev = self._last_bar_ts.get(info.symbol)
+                for tf, ts in (meta.get("last_bar_ts") or {}).items():
+                    prev = self._last_bar_ts.get((info.symbol, tf))
                     if prev is not None and ts > prev:
-                        bar_advanced.add(info.symbol)
-                    self._last_bar_ts[info.symbol] = ts
+                        bar_advanced.add((info.symbol, tf))
+                    self._last_bar_ts[(info.symbol, tf)] = ts
+
+        # a ban that started mid-scan leaves most symbols unpriced; trading
+        # on the few that got through would be acting on a partial picture
+        if self.data.banned_until > time.time() and len(prices) < len(uni) / 2:
+            return self._keep_last(self.data.ban_message())
 
         # ---- execution -----------------------------------------------------
         paper_events = []
         if self.paper:
             paper_events = self.paper.mark_to_market(prices, bar_advanced)
-            for sig in sorted(all_signals, key=lambda s: -abs(s.score)):
-                if sig.action == "enter":
-                    self.paper.open_from_signal(sig)
+        if self.live:
+            self.live.sync_positions()
+        # success estimate after mark_to_market so trades closed this scan count
+        self._attach_success(all_signals)
+
+        # at the profit goal, bank the practice gains and open nothing new
+        goal = goal_status(self.cfg.risk, self.paper.stats(prices) if self.paper else None)
+        if goal.get("locked") and self.paper and self.paper.positions:
+            for t in self.paper.close_all(prices, "profit goal reached"):
+                paper_events.append(("close", t))
+            goal = goal_status(self.cfg.risk, self.paper.stats(prices))
+
+        # the coin's own history must not argue against the setup; then the
+        # AI review; only what passes both trades
+        entries = sorted((s for s in all_signals if s.action == "enter"
+                          and (s.history or {}).get("pass", True)),
+                         key=lambda s: -abs(s.score))
+        approved = self._ai_gate(entries)
+
+        if self.paper:
+            for sig in ([] if goal.get("locked") else approved):
+                self.paper.open_from_signal(sig)
             self.paper.save()
 
         live_records = []
         if self.live:
-            self.live.sync_positions()
             halted = bool(self.paper and self.paper.halted_reason)
-            for sig in sorted(all_signals, key=lambda s: -abs(s.score)):
-                if sig.action == "enter":
-                    live_records.append(self.live.submit(sig, halted=halted).to_dict())
+            for sig in ([] if goal.get("locked") else approved):
+                live_records.append(self.live.submit(sig, halted=halted).to_dict())
+
+        # every signed-up user's own practice account, with their own sizing
+        if self.users:
+            self.users.on_scan(prices, bar_advanced, approved)
+        self.last_prices = prices
+
+        best_scalp = sorted((s for s in all_signals if s.mode == "scalp" and s.scalp_fit),
+                            key=lambda s: -s.scalp_fit["score"])[:5]
 
         # ---- assemble ------------------------------------------------------
         by_mode = {}
@@ -198,20 +296,24 @@ class Scanner:
         watching = [s for s in all_signals if s.action == "watch"]
 
         result = {
+            "warning": (self.data.ban_message() + "."
+                        if self.data.banned_until > time.time() else None),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "scan_number": self.scan_count,
             "duration_seconds": round(time.time() - started, 2),
-            "exchange": self.cfg.universe.exchange,
+            "exchange": getattr(self.data, "source", self.cfg.universe.exchange),
             "market_type": self.cfg.universe.market_type,
             "universe": [
                 {
                     "symbol": s.symbol, "base": s.base, "bucket": s.bucket,
                     "rank": s.rank, "quote_volume": s.quote_volume,
                     "change_24h": s.change_24h, "last": s.last,
+                    "name": s.name, "asset_class": s.asset_class,
                 }
                 for s in uni
             ],
             "signals": by_mode,
+            "best_scalp": [_brief(s) for s in best_scalp],
             "counts": {
                 "symbols": len(uni),
                 "signals": len(all_signals),
@@ -227,6 +329,9 @@ class Scanner:
             "news": [i.to_dict() for i in self.news.items()[:30]] if self.cfg.news.enabled else [],
             "news_errors": self.news.errors() if self.cfg.news.enabled else [],
             "paper": self.paper.stats(prices) if self.paper else None,
+            "ai": self.ai.stats() if self.ai else {"enabled": False},
+            "settings": self.settings.view(),
+            "goal": goal,
             "paper_events": [
                 {"type": kind, "data": payload.to_dict() if hasattr(payload, "to_dict") else payload}
                 for kind, payload in paper_events
@@ -238,18 +343,9 @@ class Scanner:
             } if self.live else {"gate": {"enabled": False}, "recent_orders": [], "this_scan": []},
             "errors": errors,
             "config": {
-                "scalp": {
-                    "entry": self.cfg.scalp.entry_tf,
-                    "confirm": self.cfg.scalp.confirm_tf,
-                    "bias": self.cfg.scalp.bias_tf,
-                    "min_score": self.cfg.scalp.min_score,
-                },
-                "swing": {
-                    "entry": self.cfg.swing.entry_tf,
-                    "confirm": self.cfg.swing.confirm_tf,
-                    "bias": self.cfg.swing.bias_tf,
-                    "min_score": self.cfg.swing.min_score,
-                },
+                **{mode: {"entry": m.entry_tf, "confirm": m.confirm_tf,
+                          "bias": m.bias_tf, "min_score": m.min_score}
+                   for mode, m in self._modes()},
                 "risk": {
                     "equity": self.cfg.risk.account_equity,
                     "risk_per_trade_pct": self.cfg.risk.risk_per_trade_pct,
@@ -265,6 +361,118 @@ class Scanner:
                  result["counts"]["enter"], result["counts"]["watch"])
         return result
 
+    def _ai_gate(self, entries: list) -> list:
+        """Queue reviews for entries that could actually trade, and return the
+        ones the AI has already approved. A new setup trades on a later scan,
+        once its background review lands."""
+        if not self.ai:
+            return entries
+        approved = []
+        for sig in entries:
+            could_trade = ((self.paper and self.paper.can_open(sig))
+                           or (self.live and self.live.wants(sig))
+                           or (self.users and self.users.any_can_open(sig)))
+            verdict = self.ai.verdict_for(sig)
+            if verdict is None and could_trade:
+                self.ai.request(sig, self._ai_context(sig))
+            sig.ai = self.ai.status_for(sig)
+            if self.ai.approves(verdict):
+                approved.append(sig)
+            # the AI couldn't look at it (no key, error, spent budget): unless
+            # a review is required, the desk's own rules decide. A "skip" still blocks.
+            elif not self.cfg.ai.required and sig.ai.get("state") in ("unavailable", "budget", "error"):
+                sig.ai = {**sig.ai, "fallback": True}
+                approved.append(sig)
+        return approved
+
+    def _ai_context(self, sig) -> dict:
+        """What the reviewer gets beyond the signal itself."""
+        record = {}
+        if self.paper:
+            trades = [t for t in self.paper.closed if t.mode == sig.mode]
+            record = {
+                "closed_trades": len(trades),
+                "wins": sum(1 for t in trades if t.pnl > 0),
+                "avg_pnl_usd": round(sum(t.pnl for t in trades) / len(trades), 3) if trades else None,
+                "last_10": [{"symbol": t.symbol, "direction": t.direction, "exit": t.reason,
+                             "r_multiple": t.r_multiple, "bars_held": t.bars_held}
+                            for t in trades[-10:]],
+            }
+        return {
+            "account": {"market_type": self.cfg.universe.market_type,
+                        "exchange": self.cfg.universe.exchange,
+                        "round_trip_cost_pct": 0.14,
+                        "risk_per_trade_pct": self.cfg.risk.risk_per_trade_pct},
+            "market_mood": self.news.market_mood() if self.cfg.news.enabled else {},
+            "desk_track_record_this_mode": record,
+        }
+
+    def ai_research(self, symbol: str, mode: str) -> dict:
+        """On-demand review from the detail page. Counts toward the daily cap."""
+        if not self.ai:
+            return {"state": "unavailable", "reason": "AI review is off in config"}
+        info = self.data.symbol_info(symbol)
+        if info is None:
+            return {"state": "error", "reason": f"{symbol} is not tradable"}
+        signals, _ = self._analyse_symbol(info)
+        self._attach_success(signals)
+        sig = next((s for s in signals if s.mode == mode), None)
+        if sig is None:
+            return {"state": "error", "reason": f"no {mode} analysis for {symbol}"}
+        return self.ai.review_now(sig, self._ai_context(sig))
+
+    def _attach_success(self, signals: list):
+        # computed after mark_to_market so trades closed this scan count
+        chance = {mode: (self.paper.success_chance(mode) if self.paper else prior_success())
+                  for mode, _ in self._modes()}
+        for sig in signals:
+            sig.success = dict(chance.get(sig.mode) or prior_success())
+
+    # ------------------------------------------------------------- search
+    def search(self, query: str, limit: int = 12) -> list[dict]:
+        return [
+            {"symbol": r["symbol"], "base": r["base"], "name": r["name"],
+             "asset_class": r["asset_class"], "last": r["last"],
+             "change_24h": r["change_24h"], "quote_volume": r["quote_volume"]}
+            for r in self.data.search(query, limit)
+        ]
+
+    def analyse_one(self, symbol: str) -> dict:
+        """Full analysis for any pair, on demand. Read-only: it never opens a
+        paper position, because a search is a question, not a decision."""
+        info = self.data.symbol_info(symbol)
+        if info is None:
+            return {"symbol": symbol, "error": f"{symbol} is not tradable on "
+                                               f"{self.cfg.universe.exchange}"}
+        signals, meta = self._analyse_symbol(info, check_all=True)
+        if not signals:
+            return {"symbol": symbol, "error": "not enough price history to analyse"}
+        self._attach_success(signals)
+        if self.ai:
+            for sig in signals:
+                sig.ai = self.ai.status_for(sig)
+        scalp = next((s for s in signals if s.mode == "scalp"), None)
+        return {
+            "symbol": info.symbol, "base": info.base, "name": info.name,
+            "asset_class": info.asset_class, "exchange": self.cfg.universe.exchange,
+            "spread_pct": info.spread_pct, "quote_volume": info.quote_volume,
+            "change_24h": info.change_24h, "last": info.last,
+            "scalp_fit": scalp.scalp_fit if scalp else None,
+            "signals": [s.to_dict() for s in signals],
+            "candles": {mode: _candles(df) for mode, df in meta["entry_frames"].items()},
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _keep_last(self, message: str) -> dict:
+        """Rate-limited: keep showing the last good scan, marked as old."""
+        log.warning("scan skipped: %s", message)
+        with self._lock:
+            last = self._last_result
+            if not last or last.get("error"):
+                return self._error_result(message)
+            self._last_result = {**last, "warning": message + ". Showing the last scan until then."}
+            return self._last_result
+
     def _error_result(self, message: str) -> dict:
         result = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -275,6 +483,7 @@ class Scanner:
             "counts": {"symbols": 0, "signals": 0, "enter": 0, "watch": 0,
                        "long": 0, "short": 0},
             "top_signals": [],
+            "best_scalp": [],
             "universe": [],
             "market_mood": {},
             "news": [],

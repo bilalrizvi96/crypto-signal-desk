@@ -57,6 +57,23 @@ swing:
   min_atr_pct: 0.5
   max_atr_pct: 25.0
 
+# ── Long-term: hold for weeks to months ──────────────────────────────────────
+position:
+  enabled: true
+  entry_tf: 1d               # one decision a day, not every 5 minutes
+  confirm_tf: 1w
+  bias_tf: 1w
+  limit: 400
+  atr_stop_mult: 2.0         # wide stop — daily swings are big
+  targets_r: [2.0, 4.0]
+  min_score: 50
+  watch_score: 35
+  min_adx: 18
+  max_hold_bars: 60          # paper trades time out after ~60 days
+  min_atr_pct: 1.0
+  max_atr_pct: 10.0         # daily moves above 10% make stops absurdly wide
+  min_htf_bars: 52           # a year of weekly candles is enough for the trend read
+
 # ── News & sentiment (free public feeds, no API keys) ────────────────────────
 news:
   enabled: true
@@ -77,12 +94,14 @@ news:
 
 # ── Risk ─────────────────────────────────────────────────────────────────────
 risk:
-  account_equity: 1000       # what position sizes are calculated against
+  account_equity: 100        # what position sizes are calculated against
   risk_per_trade_pct: 1.0    # risk 1% of equity per trade
   max_open_positions: 5
   max_leverage: 3.0
   daily_loss_limit_pct: 5.0  # kill switch: stop entering after a 5% day
-  max_notional_per_trade: 250
+  max_notional_per_trade: 40   # keeps ~3 trades inside a $100 account
+  profit_goal_pct: 20        # practice return to aim for (0 = off)
+  lock_at_goal: true         # at the goal: bank open practice trades, open no new ones
 
 # ── Paper trading ────────────────────────────────────────────────────────────
 paper_enabled: true
@@ -95,7 +114,7 @@ paper_enabled: true
 #  5. export EXCHANGE_API_KEY=… EXCHANGE_API_SECRET=…
 #  With any one of those missing, orders are logged and never transmitted.
 live:
-  enabled: false
+  enabled: true
   exchange: binance
   market_type: spot
   testnet: true
@@ -105,6 +124,23 @@ live:
   api_secret_env: EXCHANGE_API_SECRET
   confirm_phrase_env: LIVE_CONFIRM
   confirm_phrase: I_UNDERSTAND_THE_RISK
+  modes: [swing, position]   # scalp is paper-only for now
+
+# ── AI trade review ──────────────────────────────────────────────────────────
+#  Claude researches each setup (desk data + live web search) and must say
+#  "take" before a paper or exchange trade opens. Needs ANTHROPIC_API_KEY in
+#  .env. An AI "skip" always blocks the trade. With no key, an error or a
+#  spent budget, `required: false` trades on the desk's own rules instead.
+ai:
+  enabled: true
+  required: false
+  model: claude-opus-5-5
+  effort: high
+  web_search: true
+  max_searches: 5            # per review
+  max_reviews_per_day: 30    # cost cap — roughly $0.15–0.30 per review with search
+  min_confidence: 60         # a "take" below this counts as skip
+  cache_minutes: 45          # the same setup is not re-reviewed within this window
 
 # ── Dashboard server ─────────────────────────────────────────────────────────
 server:

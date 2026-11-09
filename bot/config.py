@@ -10,12 +10,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = ROOT / "config.yaml"
-STATE_DIR = ROOT / "state"
+STATE_DIR = Path(os.getenv("BOT_STATE_DIR") or ROOT / "state")   # paper state, order log
 
 
 @dataclass
 class UniverseCfg:
     exchange: str = "binance"
+    fallback_exchange: str = "okx"     # read prices here while `exchange` rate-limits us ("" = none)
     market_type: str = "spot"          # "spot" or "swap" (perps, needed for real shorts)
     quote: str = "USDT"
     large_cap_top: int = 12            # top N by 24h quote volume = "large"
@@ -47,6 +48,9 @@ class ModeCfg:
     max_hold_bars: int = 24            # paper trades time out after this many entry-TF bars
     min_atr_pct: float = 0.10          # skip dead markets (ATR < x% of price)
     max_atr_pct: float = 8.0           # skip blowoff volatility
+    # confirm/bias frames only read the trend, so they can make do with less
+    # history than the entry frame — 52 weekly bars is a year, 210 is four
+    min_htf_bars: int = 210
 
 
 @dataclass
@@ -78,6 +82,8 @@ class RiskCfg:
     max_leverage: float = 3.0
     daily_loss_limit_pct: float = 5.0  # kill switch: stop trading after this drawdown
     max_notional_per_trade: float = 250.0
+    profit_goal_pct: float = 20.0      # practice return to aim for; 0 turns the goal off
+    lock_at_goal: bool = True          # at the goal: bank open practice trades, open no new ones
 
 
 @dataclass
@@ -93,6 +99,41 @@ class LiveCfg:
     order_type: str = "market"
     confirm_phrase_env: str = "LIVE_CONFIRM"
     confirm_phrase: str = "I_UNDERSTAND_THE_RISK"
+    # modes allowed to send exchange orders; scalp stays paper-only until it
+    # proves itself (5 wins in its first 24 practice trades)
+    modes: list[str] = field(default_factory=lambda: ["swing", "position"])
+
+
+@dataclass
+class AICfg:
+    """Claude reviews every trade before it opens. An AI "skip" always blocks
+    the trade. When the AI can't review (no key, an error, a spent daily
+    budget), `required` decides: true skips the trade, false lets it open on
+    the desk's own rules."""
+    enabled: bool = True
+    required: bool = False
+    model: str = "claude-opus-5-5"
+    effort: str = "high"
+    web_search: bool = True
+    max_searches: int = 5              # web searches per review
+    max_reviews_per_day: int = 30      # hard cap on paid reviews (UTC day)
+    min_confidence: int = 60           # "take" below this is treated as skip
+    cache_minutes: int = 45            # reuse a verdict for the same setup
+    workers: int = 2                   # reviews run in the background, in parallel
+    api_key_env: str = "ANTHROPIC_API_KEY"
+
+
+@dataclass
+class HistoryCfg:
+    """Before a trade opens, replay the same setup over the coin's own recent
+    bars and simulate today's trade from them (see history.py)."""
+    enabled: bool = True
+    required: bool = True              # a failed check (an error) skips the trade
+    min_samples: int = 3               # past setups needed before their record can block a trade
+    lookback_bars: int = 1000          # entry-timeframe bars replayed (Binance's max per request)
+    min_sim_avg_r: float = -0.10       # skip when the simulation averages worse than this, after fees
+    replays: int = 2000
+    sim_pool_bars: int = 300           # recent bars the simulation draws from
 
 
 @dataclass
@@ -118,9 +159,17 @@ class Config:
         watch_score=35.0, min_adx=20.0, max_hold_bars=30,
         min_atr_pct=0.5, max_atr_pct=25.0,
     ))
+    position: ModeCfg = field(default_factory=lambda: ModeCfg(
+        entry_tf="1d", confirm_tf="1w", bias_tf="1w", limit=400,
+        atr_stop_mult=2.0, targets_r=[2.0, 4.0], min_score=50.0,
+        watch_score=35.0, min_adx=18.0, max_hold_bars=60,
+        min_atr_pct=1.0, max_atr_pct=10.0, min_htf_bars=52,
+    ))
     news: NewsCfg = field(default_factory=NewsCfg)
     risk: RiskCfg = field(default_factory=RiskCfg)
     live: LiveCfg = field(default_factory=LiveCfg)
+    ai: AICfg = field(default_factory=AICfg)
+    history: HistoryCfg = field(default_factory=HistoryCfg)
     server: ServerCfg = field(default_factory=ServerCfg)
     paper_enabled: bool = True
 
@@ -143,7 +192,35 @@ def _merge(dc, data: dict):
     return dc
 
 
-def load_config(path: str | Path | None = None) -> Config:
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def load_env_file(path: Path) -> list[str]:
+    """Read KEY=VALUE lines from a .env file into os.environ.
+
+    Variables already set in the shell win, and blank values are skipped, so
+    an empty template never overrides anything. Returns the names it set.
+    """
+    if not path.exists():
+        return []
+    loaded = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
+def load_config(path: str | Path | None = None, use_env_file: bool = True) -> Config:
+    if use_env_file:
+        load_env_file(ROOT / ".env")
     cfg = Config()
     p = Path(path) if path else DEFAULT_CONFIG_PATH
     if p.exists():
@@ -158,6 +235,18 @@ def load_config(path: str | Path | None = None) -> Config:
         cfg.server.port = int(os.environ["BOT_PORT"])
     if os.getenv("BOT_EQUITY"):
         cfg.risk.account_equity = float(os.environ["BOT_EQUITY"])
+
+    # hosting platforms (Render, Koyeb…) hand the port in $PORT and need the
+    # server reachable from outside the container
+    if os.getenv("PORT"):
+        cfg.server.port = int(os.environ["PORT"])
+    if os.getenv("BOT_HOST"):
+        cfg.server.host = os.environ["BOT_HOST"]
+    if os.getenv("BOT_OPEN_BROWSER"):
+        cfg.server.open_browser = _truthy(os.environ["BOT_OPEN_BROWSER"])
+    # a public deployment sets this false so it can never trade, whatever config.yaml says
+    if os.getenv("BOT_LIVE_ENABLED"):
+        cfg.live.enabled = _truthy(os.environ["BOT_LIVE_ENABLED"])
 
     STATE_DIR.mkdir(exist_ok=True)
     return cfg

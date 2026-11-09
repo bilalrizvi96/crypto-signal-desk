@@ -21,6 +21,13 @@ log = logging.getLogger("bot.paper")
 
 TAKER_FEE_PCT = 0.05      # 0.05% per side — typical retail taker fee
 SLIPPAGE_PCT = 0.02       # extra allowance per side
+SUCCESS_PRIOR_PCT = 40.0  # starting success estimate before any trades close
+SUCCESS_PRIOR_TRADES = 10 # the prior counts as this many trades when blending
+
+
+def prior_success() -> dict:
+    """The success estimate for a signal when there is no trade history."""
+    return {"pct": SUCCESS_PRIOR_PCT, "trades": 0, "wins": 0, "basis": "prior"}
 
 
 def _now() -> str:
@@ -51,6 +58,7 @@ class PaperPosition:
     tp1_hit: bool = False
     breakeven: bool = False
     note: str = ""
+    ai_confidence: int | None = None   # set when an AI review approved the entry
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -75,14 +83,18 @@ class ClosedTrade:
     bars_held: int
     reason: str
     score: float
+    ai_confidence: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 class PaperBroker:
-    def __init__(self, risk: RiskCfg, path: Path | None = None):
+    def __init__(self, risk: RiskCfg, path: Path | None = None, persist: bool = True):
+        """persist=False keeps the broker in memory; its owner stores
+        to_state() somewhere else (a user's account lives in the database)."""
         self.risk = risk
+        self.persist = persist
         self.path = path or (STATE_DIR / "paper_state.json")
         self._lock = threading.RLock()
         self.starting_equity = risk.account_equity
@@ -97,13 +109,18 @@ class PaperBroker:
 
     # ------------------------------------------------------------ storage
     def _load(self):
-        if not self.path.exists():
+        if not self.persist or not self.path.exists():
             return
         try:
             data = json.loads(self.path.read_text())
         except Exception as exc:
             log.warning("could not read paper state: %s", exc)
             return
+        self.load_state(data)
+        log.info("paper state loaded: %d open, %d closed",
+                 len(self.positions), len(self.closed))
+
+    def load_state(self, data: dict):
         with self._lock:
             self.starting_equity = data.get("starting_equity", self.starting_equity)
             self.cash = data.get("cash", self.cash)
@@ -115,12 +132,10 @@ class PaperBroker:
             self.day_start_equity = data.get("day_start_equity", self.starting_equity)
             self.day_stamp = data.get("day_stamp", self.day_stamp)
             self.halted_reason = data.get("halted_reason")
-        log.info("paper state loaded: %d open, %d closed",
-                 len(self.positions), len(self.closed))
 
-    def save(self):
+    def to_state(self) -> dict:
         with self._lock:
-            payload = {
+            return {
                 "starting_equity": self.starting_equity,
                 "cash": self.cash,
                 "positions": {k: v.to_dict() for k, v in self.positions.items()},
@@ -131,6 +146,11 @@ class PaperBroker:
                 "halted_reason": self.halted_reason,
                 "saved_at": _now(),
             }
+
+    def save(self):
+        if not self.persist:
+            return
+        payload = self.to_state()
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(self.path)
@@ -172,26 +192,43 @@ class PaperBroker:
             total += (px - pos.entry) * sign * pos.remaining_units
         return total
 
+    @staticmethod
+    def _position_view(pos: PaperPosition, prices: dict[str, float]) -> dict:
+        """A position plus its live mark, so the page can show what it is worth now."""
+        d = pos.to_dict()
+        px = prices.get(pos.symbol)
+        sign = 1.0 if pos.direction == "long" else -1.0
+        d["mark"] = px
+        d["unrealised"] = (round((px - pos.entry) * sign * pos.remaining_units, 4)
+                           if px is not None else None)
+        return d
+
     def equity(self, prices: dict[str, float]) -> float:
         return self.cash + self.unrealised(prices)
 
     # ------------------------------------------------------------- trading
-    def open_from_signal(self, sig) -> PaperPosition | None:
-        """sig is a strategy.Signal. Returns the position if one was opened."""
+    def can_open(self, sig) -> bool:
+        """Would open_from_signal accept this signal right now? Lets the scanner
+        skip paying for an AI review of a trade that could not open anyway."""
         with self._lock:
-            if self.halted_reason:
-                return None
-            if sig.action != "enter" or sig.direction not in ("long", "short"):
+            return (not self.halted_reason
+                    and sig.action == "enter" and sig.direction in ("long", "short")
+                    # one trade per coin: a swing and a long-term trade on the
+                    # same coin would double the bet on one price move
+                    and not any(p.symbol == sig.symbol for p in self.positions.values())
+                    and len(self.positions) < self.risk.max_open_positions
+                    and sig.position_size_units > 0)
+
+    def open_from_signal(self, sig, units: float | None = None) -> PaperPosition | None:
+        """sig is a strategy.Signal; units overrides its size (a user's own
+        risk settings). Returns the position if one was opened."""
+        units = sig.position_size_units if units is None else units
+        with self._lock:
+            if not self.can_open(sig) or units <= 0:
                 return None
             key = self._key(sig.symbol, sig.mode)
-            if key in self.positions:
-                return None
-            if len(self.positions) >= self.risk.max_open_positions:
-                return None
-            if sig.position_size_units <= 0:
-                return None
 
-            notional = sig.position_size_units * sig.entry
+            notional = units * sig.entry
             fee = self._fee(notional)
             self.cash -= fee
 
@@ -205,8 +242,8 @@ class PaperBroker:
                 stop=sig.stop,
                 initial_stop=sig.stop,
                 targets=list(sig.targets),
-                size_units=sig.position_size_units,
-                remaining_units=sig.position_size_units,
+                size_units=units,
+                remaining_units=units,
                 notional=notional,
                 opened_at=_now(),
                 entry_tf=sig.timeframes.get("entry", "?"),
@@ -214,6 +251,8 @@ class PaperBroker:
                 score=sig.score,
                 fees_paid=fee,
                 note=f"{sig.confidence} confidence, {sig.regime} regime",
+                ai_confidence=(getattr(sig, "ai", None) or {}).get("confidence")
+                if (getattr(sig, "ai", None) or {}).get("state") == "approved" else None,
             )
             self.positions[key] = pos
             log.info("paper open %s %s @ %.6g (score %.0f)",
@@ -255,6 +294,7 @@ class PaperBroker:
             bars_held=pos.bars_held,
             reason=reason,
             score=pos.score,
+            ai_confidence=pos.ai_confidence,
         )
         self.closed.append(trade)
         self.positions.pop(key, None)
@@ -262,8 +302,14 @@ class PaperBroker:
                  pos.direction, pos.symbol, price, reason, r_mult)
         return trade
 
-    def mark_to_market(self, prices: dict[str, float], bar_advanced: set[str] | None = None):
-        """Check stops/targets/timeouts against the latest prices."""
+    def mark_to_market(self, prices: dict[str, float],
+                       bar_advanced: set[tuple[str, str]] | None = None):
+        """Check stops/targets/timeouts against the latest prices.
+
+        bar_advanced holds (symbol, timeframe) pairs whose newest bar changed
+        since the last scan; a position only ages when its own entry
+        timeframe prints a new bar, so a daily trade isn't timed out in 5m bars.
+        """
         events = []
         with self._lock:
             for key in list(self.positions.keys()):
@@ -271,7 +317,7 @@ class PaperBroker:
                 px = prices.get(pos.symbol)
                 if px is None:
                     continue
-                if bar_advanced and pos.symbol in bar_advanced:
+                if bar_advanced and (pos.symbol, pos.entry_tf) in bar_advanced:
                     pos.bars_held += 1
 
                 long = pos.direction == "long"
@@ -323,7 +369,36 @@ class PaperBroker:
             self.equity_curve.append({"t": _now(), "equity": round(equity, 4)})
         return events
 
+    def close_all(self, prices: dict[str, float], reason: str) -> list[ClosedTrade]:
+        """Close every open position at its current price."""
+        closed = []
+        with self._lock:
+            for key in list(self.positions.keys()):
+                pos = self.positions[key]
+                px = prices.get(pos.symbol)
+                if px is None:
+                    continue
+                t = self._close(key, pos, px, pos.remaining_units, reason, False)
+                if t:
+                    closed.append(t)
+        return closed
+
     # --------------------------------------------------------------- stats
+    def success_chance(self, mode: str) -> dict:
+        """Estimated chance a new signal in this mode closes in profit.
+
+        Starts at SUCCESS_PRIOR_PCT and moves toward the real paper win rate
+        for the mode as trades close, so one lucky trade cannot read as 100%.
+        """
+        with self._lock:
+            trades = [t for t in self.closed if t.mode == mode]
+            wins = sum(1 for t in trades if t.pnl > 0)
+            n = len(trades)
+            pct = ((wins + SUCCESS_PRIOR_PCT / 100.0 * SUCCESS_PRIOR_TRADES)
+                   / (n + SUCCESS_PRIOR_TRADES) * 100.0)
+            return {"pct": round(pct, 1), "trades": n, "wins": wins,
+                    "basis": "paper" if n else "prior"}
+
     def stats(self, prices: dict[str, float] | None = None) -> dict:
         with self._lock:
             prices = prices or {}
@@ -355,12 +430,15 @@ class PaperBroker:
                 "win_rate": round(len(wins) / len(closed) * 100.0, 1) if closed else 0.0,
                 "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
                 "avg_r": round(sum(r_values) / len(r_values), 3) if r_values else 0.0,
+                "avg_pnl": round(sum(t.pnl for t in closed) / len(closed), 4) if closed else None,
+                "ai_closed": sum(1 for t in closed if t.ai_confidence is not None),
+                "ai_wins": sum(1 for t in closed if t.ai_confidence is not None and t.pnl > 0),
                 "best_r": round(max(r_values), 2) if r_values else 0.0,
                 "worst_r": round(min(r_values), 2) if r_values else 0.0,
                 "total_fees": round(sum(t.fees for t in closed), 2),
                 "max_drawdown_pct": round(max_dd, 2),
                 "halted_reason": self.halted_reason,
-                "positions": [p.to_dict() for p in self.positions.values()],
+                "positions": [self._position_view(p, prices) for p in self.positions.values()],
                 "recent_trades": [t.to_dict() for t in closed[-15:]][::-1],
                 "equity_curve_points": self.equity_curve[-180:],
             }

@@ -52,7 +52,8 @@ def print_summary(result: dict):
         arrow = "▲" if s["direction"] == "long" else "▼"
         tag = "FIRE" if s["action"] == "enter" else "watch"
         print(f"\n  {arrow} {s['base']:<8} {s['mode']:<6} {tag:<5} "
-              f"score {s['score']:+6.1f}  {s['confidence']:<8} {s['regime']}")
+              f"score {s['score']:+6.1f}  {s['confidence']:<8} {s['regime']}  "
+              f"~{s.get('success', {}).get('pct', 40):.0f}% success")
         print(f"      entry {s['entry']:<14.8g} stop {s['stop']:<14.8g} "
               f"targets {' / '.join(f'{t:.8g}' for t in s['targets'])}  ({s['rr']}R)")
         top = s.get("votes", [])[:3]

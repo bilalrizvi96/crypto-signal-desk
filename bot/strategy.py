@@ -78,6 +78,12 @@ class Signal:
     generated_at: str = ""
     change_24h: float = 0.0
     quote_volume: float = 0.0
+    success: dict = field(default_factory=dict)   # estimated chance to close in profit
+    name: str = ""
+    asset_class: str = "crypto"
+    scalp_fit: dict = field(default_factory=dict)  # scalp mode only, see scalp_fit()
+    ai: dict = field(default_factory=dict)         # AI review state/verdict, see ai_review.py
+    history: dict = field(default_factory=dict)    # the coin's own past for this setup, see history.py
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -639,3 +645,66 @@ def build_signal(
         change_24h=change_24h,
         quote_volume=quote_volume,
     )
+
+
+# --------------------------------------------------------------------------
+# scalp suitability
+# --------------------------------------------------------------------------
+ROUND_TRIP_COST_PCT = 2 * (0.05 + 0.02)   # taker fee + slippage, both sides (see paper.py)
+
+
+def _ramp(x: float, lo: float, hi: float) -> float:
+    """0 at lo, 1 at hi, linear between (lo > hi flips the direction)."""
+    if hi == lo:
+        return 1.0 if x >= hi else 0.0
+    return _clamp((x - lo) / (hi - lo), 0.0, 1.0)
+
+
+def scalp_fit(sig: Signal, spread_pct: float) -> dict:
+    """How well a pair suits small, fast trades right now, 0–100.
+
+    A strong signal is not enough for scalping: the pair also has to be
+    liquid, tight, moving enough to beat fees, and not so wild that stops
+    get run. Each factor scores 0–1 and they are weighted equally.
+    """
+    qv = sig.quote_volume or 0.0
+    cost = ROUND_TRIP_COST_PCT + max(spread_pct, 0.0)
+    stop_move = sig.risk_pct_move or 0.0
+    atr = sig.atr_pct or 0.0
+
+    liquidity = _ramp(math.log10(max(qv, 1.0)), math.log10(3e6), math.log10(5e7))
+    spread = _ramp(spread_pct, 0.15, 0.03)
+    if atr < 0.15:
+        volatility = _ramp(atr, 0.10, 0.15)
+    else:
+        volatility = _ramp(atr, 3.0, 1.0)
+    fees = _ramp(stop_move / cost if cost else 0.0, 1.5, 5.0)
+    strength = _clamp(abs(sig.score) / 80.0, 0.0, 1.0) if sig.action != "none" else 0.0
+
+    factors = {"liquidity": liquidity, "spread": spread, "volatility": volatility,
+               "fees": fees, "signal": strength}
+    score = round(sum(factors.values()) / len(factors) * 100.0, 1)
+    verdict = "good" if score >= 70 else ("fair" if score >= 45 else "poor")
+
+    reasons = []
+    depth = "deep" if liquidity >= 0.7 else ("moderate" if liquidity >= 0.35 else "thin")
+    reasons.append(f"{depth} liquidity (${qv / 1e6:,.1f}M 24h)")
+    reasons.append(f"spread {spread_pct:.3f}% — {'tight' if spread >= 0.7 else 'wide'}")
+    if atr < 0.15:
+        reasons.append(f"moves {atr:.2f}% per bar — too quiet to beat fees")
+    elif atr > 1.0:
+        reasons.append(f"moves {atr:.2f}% per bar — wild, stops get hit")
+    else:
+        reasons.append(f"moves {atr:.2f}% per bar — workable for scalps")
+    reasons.append(f"fees + spread ≈ {cost:.2f}% vs a {stop_move:.2f}% stop"
+                   + (" — fees eat most of the edge" if fees < 0.4 else ""))
+    if sig.action == "enter":
+        reasons.append(f"signal firing {sig.direction} ({sig.score:+.0f})")
+    elif sig.action == "watch":
+        reasons.append(f"on watch {sig.direction} ({sig.score:+.0f}), not firing")
+    else:
+        reasons.append("no signal right now")
+
+    return {"score": score, "verdict": verdict,
+            "factors": {k: round(v, 2) for k, v in factors.items()},
+            "reasons": reasons}
