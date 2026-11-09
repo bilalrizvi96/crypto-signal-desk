@@ -95,7 +95,7 @@ CONTEXT_FIELDS = (
     "symbol", "base", "name", "asset_class", "bucket", "mode", "direction", "action", "score",
     "confidence", "regime", "price", "entry", "stop", "targets", "rr", "atr_pct",
     "risk_pct_move", "hold_estimate", "invalidation", "timeframes", "confirm", "bias",
-    "votes", "warnings", "news", "change_24h", "quote_volume", "scalp_fit", "success",
+    "votes", "warnings", "news", "change_24h", "quote_volume", "scalp_fit", "success", "history",
 )
 
 

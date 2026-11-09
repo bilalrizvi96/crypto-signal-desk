@@ -886,6 +886,83 @@ def test_ai_review():
 
 
 # ---------------------------------------------------------------------------
+# 7a. history check: the coin's own past for this setup
+# ---------------------------------------------------------------------------
+def test_history():
+    print("\n[7a] Coin history check")
+    import shutil
+    import tempfile
+    from bot.config import HistoryCfg
+    from bot.history import HistoryChecker, play_out
+
+    # exits match the paper broker: entry 100, stop 95 (risk 5), targets 105 / 110
+    r, how, n = play_out([(104, 99, 102), (111, 101, 110)], "long", 100, 95, [105, 110], 30)
+    check("half at target 1, rest at target 2", how == "target" and abs(r - 1.5) < 1e-9 and n == 2, f"{r} {how}")
+    r, how, _ = play_out([(101, 94, 96)], "long", 100, 95, [105, 110], 30)
+    check("stop first is -1R", how == "stop" and abs(r + 1) < 1e-9)
+    r, how, _ = play_out([(106, 101, 104), (104, 99, 99)], "long", 100, 95, [105, 110], 30)
+    check("target 1 then back to entry banks +0.5R", how == "breakeven" and abs(r - 0.5) < 1e-9)
+    r, how, _ = play_out([(101, 99, 100.5)] * 3, "long", 100, 95, [105, 110], 3)
+    check("a trade that goes nowhere times out at the close", how == "timeout" and abs(r - 0.1) < 1e-9)
+    r, how, _ = play_out([(101, 94, 97), (101, 96, 99)], "short", 100, 105, [95, 90], 30)
+    check("shorts mirror longs", how == "breakeven" and abs(r - 0.5) < 1e-9)
+    r, how, _ = play_out([(106, 94, 100)], "long", 100, 95, [105, 110], 30)
+    check("a bar touching stop and target counts as the stop", how == "stop")
+
+    # a real replay on the synthetic uptrend
+    cfg = Config()
+    hc = HistoryChecker(cfg.history, cfg.risk)
+    frames = {"entry": ta.enrich(synth(500, drift=0.002, vol=0.006, seed=5, tf_minutes=240)),
+              "confirm": ta.enrich(synth(300, drift=0.004, vol=0.01, seed=6, tf_minutes=1440)),
+              "bias": ta.enrich(synth(300, drift=0.006, vol=0.012, seed=7, tf_minutes=1440))}
+    sig = build_signal(symbol="UP/USDT", base="UP", bucket="large", mode="swing", mode_cfg=cfg.swing,
+                       risk_cfg=cfg.risk, frames=frames)
+    if sig.direction == "long":
+        out = hc.check(sig, frames, cfg.swing)
+        check("the replay finds past setups on a trending coin", out["history"]["trades"] >= 1,
+              str(out["history"]))
+        check("the simulation runs the configured number of times", out["sim"]["replays"] == cfg.history.replays)
+        check("odds add up to 100%", abs(sum(out["sim"][k] for k in ("target_first_pct", "stop_first_pct",
+              "breakeven_pct", "timeout_pct")) - 100) < 0.5)
+        again = hc.check(sig, frames, cfg.swing)
+        check("a check is cached until a new bar prints", again is out)
+    else:
+        check("synthetic uptrend produced a long for the replay test", False, sig.direction)
+
+    # the gate
+    hc2 = HistoryChecker(HistoryCfg(), cfg.risk)
+    sim_ok = {"avg_r": 0.2, "stop_first_pct": 30}
+    hc2._simulate = lambda *a: sim_ok
+    for label, hist, want in (
+            ("a losing record on this coin blocks the trade", {"trades": 8, "wins": 2, "avg_r": -0.3, "total_r": -2.4}, False),
+            ("a winning record lets it through", {"trades": 8, "wins": 5, "avg_r": 0.4, "total_r": 3.2}, True),
+            ("too few past setups can't block on their own", {"trades": 2, "wins": 0, "avg_r": -1.0, "total_r": -2}, True)):
+        hc2._replay = lambda *a, h=hist: h
+        check(label, hc2._run(sig, frames, cfg.swing)["pass"] is want)
+    hc2._replay = lambda *a: {"trades": 8, "wins": 5, "avg_r": 0.4, "total_r": 3.2}
+    hc2._simulate = lambda *a: {"avg_r": -0.4, "stop_first_pct": 70}
+    check("a clearly negative simulation blocks the trade", hc2._run(sig, frames, cfg.swing)["pass"] is False)
+    hc2._replay = lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+    hc2._cache.clear()
+    check("a failed check skips the trade (required)", hc2.check(sig, frames, cfg.swing)["pass"] is False)
+
+    # in the scanner: blocked setups never open
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        sc = _ai_scanner(None, tmp)
+        sc.history.check = lambda sig, frames, mcfg: {"state": "blocked", "pass": False, "reason": "test"}
+        r = sc.scan()
+        check("setups the coin's history rejects never open", r["paper"]["open_positions"] == 0
+              and r["counts"]["enter"] >= 1)
+        cards = [x for m in r["signals"].values() for x in m if x["action"] == "enter"]
+        check("cards show the history verdict", all(x["history"].get("state") == "blocked" for x in cards))
+        sc.history.check = lambda sig, frames, mcfg: {"state": "passed", "pass": True, "reason": "test"}
+        check("setups it passes trade as before", sc.scan()["paper"]["open_positions"] >= 1)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # 7b2. exchange rate-limit bans
 # ---------------------------------------------------------------------------
 def test_rate_limit():
@@ -1193,6 +1270,7 @@ def main():
     test_config_and_gating()
     test_server(result)
     test_ai_review()
+    test_history()
     test_rate_limit()
     test_settings_and_goal()
     test_user_accounts()

@@ -83,6 +83,7 @@ class Signal:
     asset_class: str = "crypto"
     scalp_fit: dict = field(default_factory=dict)  # scalp mode only, see scalp_fit()
     ai: dict = field(default_factory=dict)         # AI review state/verdict, see ai_review.py
+    history: dict = field(default_factory=dict)    # the coin's own past for this setup, see history.py
 
     def to_dict(self) -> dict:
         return asdict(self)

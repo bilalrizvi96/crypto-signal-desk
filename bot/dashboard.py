@@ -832,6 +832,7 @@ function card(s, exchange){
     </div>
 
     ${chance}
+    ${histBlock(s)}
     ${aiBlock(s)}
 
     <table class="lv">
@@ -862,6 +863,29 @@ function card(s, exchange){
 }
 
 /* ---------- AI review ---------- */
+function histBlock(s, opts){
+  const h=s.history||{}; opts=opts||{};
+  if(!h.state) return "";
+  if(h.state==="error") return `<div class="ai-box error" style="margin-bottom:6px"><div class="ai-h">History check failed — trade skipped</div>
+    <div class="ai-s">${esc(h.reason||"")}</div></div>`;
+  const H=h.history||{}, M=h.sim||{}, ok=h.state==="passed";
+  const r=v=>`${v>=0?"+":""}${(v||0).toFixed(2)}R`;
+  const tf=esc(h.timeframe||"");
+  return `<div class="ai-box ${ok?"approved":"rejected"}" style="margin-bottom:6px" role="status">
+    <div class="ai-h"><span>${ok?"✓ Coin history agrees":"✗ Coin history says skip"}</span></div>
+    <div class="ai-s">${esc(h.reason||"")}</div>
+    <details${opts.open?" open":""}><summary>What its past shows</summary>
+      <div class="ai-lbl">Same setup on ${esc(s.base)}, last ${h.bars} ${tf} bars</div>
+      <div class="ai-s">${H.trades?`Fired ${H.trades} time${H.trades===1?"":"s"}: ${H.wins} won, ${H.trades-H.wins} lost,
+        ${r(H.avg_r)} a trade after fees (${r(H.total_r)} in all).`:"It never fired in this stretch, so there is no record yet."}</div>
+      <div class="ai-lbl">${(M.replays||0).toLocaleString()} simulated runs from today's entry</div>
+      <div class="ai-s">Target first ${M.target_first_pct}% · stop first ${M.stop_first_pct}% ·
+        stop at entry after target 1 ${M.breakeven_pct}% · ran out of time ${M.timeout_pct}%.
+        Average ${r(M.avg_r)} after fees.</div>
+      <div class="ai-s" style="margin-top:5px;color:var(--muted)">Built from the coin's own recent bars:
+        a reality check, not a prediction.</div>
+    </details></div>`;
+}
 function aiRequired(){ return !!(state&&state.ai&&state.ai.required); }
 function aiBlock(s, opts){
   const a=s.ai||{}; opts=opts||{};
@@ -1230,6 +1254,8 @@ function detailView(a, close){
       <div class="d-panel"><h3>The plan <span class="c">${esc(s.timeframes.entry)}→${esc(s.timeframes.confirm)}→${esc(s.timeframes.bias)}</span></h3>
         ${planRows}${walletRows}</div>
     </div>
+    ${s.history&&s.history.state?`<div class="d-panel" style="margin-bottom:14px"><h3>Coin history
+        <span class="c">${esc(modeLabel(s.mode))} trade</span></h3>${histBlock(s,{open:true})}</div>`:""}
     <div class="d-panel" style="margin-bottom:14px"><h3>AI research <span class="c">${esc(modeLabel(s.mode))} trade</span></h3>
       ${s.ai&&s.ai.state&&s.ai.state!=="none"?aiBlock(s,{open:true})
         :`<div class="ai-s" style="font-size:12.5px;color:var(--ink-2);margin-bottom:8px">Ask Claude to research this ${esc(modeLabel(s.mode)).toLowerCase()} setup:

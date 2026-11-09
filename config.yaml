@@ -94,12 +94,12 @@ news:
 
 # ── Risk ─────────────────────────────────────────────────────────────────────
 risk:
-  account_equity: 1000       # what position sizes are calculated against
+  account_equity: 100        # what position sizes are calculated against
   risk_per_trade_pct: 1.0    # risk 1% of equity per trade
   max_open_positions: 5
   max_leverage: 3.0
   daily_loss_limit_pct: 5.0  # kill switch: stop entering after a 5% day
-  max_notional_per_trade: 250
+  max_notional_per_trade: 40   # keeps ~3 trades inside a $100 account
   profit_goal_pct: 20        # practice return to aim for (0 = off)
   lock_at_goal: true         # at the goal: bank open practice trades, open no new ones
 

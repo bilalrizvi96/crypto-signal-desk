@@ -124,6 +124,19 @@ class AICfg:
 
 
 @dataclass
+class HistoryCfg:
+    """Before a trade opens, replay the same setup over the coin's own recent
+    bars and simulate today's trade from them (see history.py)."""
+    enabled: bool = True
+    required: bool = True              # a failed check (an error) skips the trade
+    min_samples: int = 3               # past setups needed before their record can block a trade
+    lookback_bars: int = 1000          # entry-timeframe bars replayed (Binance's max per request)
+    min_sim_avg_r: float = -0.10       # skip when the simulation averages worse than this, after fees
+    replays: int = 2000
+    sim_pool_bars: int = 300           # recent bars the simulation draws from
+
+
+@dataclass
 class ServerCfg:
     host: str = "127.0.0.1"
     port: int = 8787
@@ -156,6 +169,7 @@ class Config:
     risk: RiskCfg = field(default_factory=RiskCfg)
     live: LiveCfg = field(default_factory=LiveCfg)
     ai: AICfg = field(default_factory=AICfg)
+    history: HistoryCfg = field(default_factory=HistoryCfg)
     server: ServerCfg = field(default_factory=ServerCfg)
     paper_enabled: bool = True
 

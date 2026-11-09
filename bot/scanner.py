@@ -14,6 +14,7 @@ from . import indicators as ta
 from .config import Config
 from .data import MarketData, RateLimited, SymbolInfo, tf_seconds
 from .ai_review import AIReviewer
+from .history import HistoryChecker
 from .live import LiveTrader
 from .news import NewsEngine
 from .paper import PaperBroker, prior_success
@@ -52,6 +53,7 @@ class Scanner:
         self.paper = PaperBroker(cfg.risk) if cfg.paper_enabled else None
         self.live = LiveTrader(cfg.live, cfg.risk) if cfg.live.enabled else None
         self.ai = AIReviewer(cfg.ai) if cfg.ai.enabled else None
+        self.history = HistoryChecker(cfg.history, cfg.risk) if cfg.history.enabled else None
         self.settings = DeskSettings(cfg)
         self.users = None          # UserBooks, attached by the server (it owns the storage)
         self.last_prices: dict[str, float] = {}
@@ -89,8 +91,10 @@ class Scanner:
             out.append(("position", self.cfg.position))
         return out
 
-    def _analyse_symbol(self, info: SymbolInfo) -> tuple[list, dict]:
-        """Returns (signals, meta) for one symbol across all enabled modes."""
+    def _analyse_symbol(self, info: SymbolInfo, check_all: bool = False) -> tuple[list, dict]:
+        """Returns (signals, meta) for one symbol across all enabled modes.
+        The history check runs for firing signals, or for every directional
+        one with check_all (the detail page)."""
         signals, frames_cache, entry_frames = [], {}, {}
         coin_news = (
             self.news.for_coin(info.base).to_dict() if self.cfg.news.enabled else {}
@@ -139,6 +143,9 @@ class Scanner:
                 sig.asset_class = info.asset_class
                 if mode == "scalp":
                     sig.scalp_fit = scalp_fit(sig, info.spread_pct)
+                if self.history and sig.direction in ("long", "short") and (
+                        sig.action == "enter" or check_all):
+                    sig.history = self.history.check(sig, self._history_frames(info, mcfg, frames), mcfg)
                 signals.append(sig)
                 entry_frames[mode] = frames["entry"]
             except Exception as exc:
@@ -153,6 +160,18 @@ class Scanner:
             "entry_frames": entry_frames,
         }
         return signals, meta
+
+    def _history_frames(self, info: SymbolInfo, mcfg, frames: dict) -> dict:
+        """A longer stretch of the entry timeframe for the history replay;
+        the scan's own frames if the exchange gives no more (OKX caps at 300)."""
+        try:
+            deep = self.data.fetch_ohlcv(info.symbol, mcfg.entry_tf, self.cfg.history.lookback_bars)
+        except Exception as exc:
+            log.debug("deep history for %s unavailable: %s", info.symbol, exc)
+            return frames
+        if len(deep) <= len(frames["entry"]):
+            return frames
+        return {**frames, "entry": ta.enrich(deep)}
 
     # --------------------------------------------------------------- scan
     def scan(self) -> dict:
@@ -240,8 +259,10 @@ class Scanner:
                 paper_events.append(("close", t))
             goal = goal_status(self.cfg.risk, self.paper.stats(prices))
 
-        # every entry goes through the AI review first; only approved ones trade
-        entries = sorted((s for s in all_signals if s.action == "enter"),
+        # the coin's own history must not argue against the setup; then the
+        # AI review; only what passes both trades
+        entries = sorted((s for s in all_signals if s.action == "enter"
+                          and (s.history or {}).get("pass", True)),
                          key=lambda s: -abs(s.score))
         approved = self._ai_gate(entries)
 
@@ -423,7 +444,7 @@ class Scanner:
         if info is None:
             return {"symbol": symbol, "error": f"{symbol} is not tradable on "
                                                f"{self.cfg.universe.exchange}"}
-        signals, meta = self._analyse_symbol(info)
+        signals, meta = self._analyse_symbol(info, check_all=True)
         if not signals:
             return {"symbol": symbol, "error": "not enough price history to analyse"}
         self._attach_success(signals)

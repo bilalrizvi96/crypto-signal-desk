@@ -57,7 +57,7 @@ class MarketData:
     def __init__(self, cfg: UniverseCfg):
         self.cfg = cfg
         self._lock = threading.RLock()
-        self._ohlcv_cache: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
+        self._ohlcv_cache: dict[tuple[str, str, str, int], tuple[float, pd.DataFrame]] = {}
         self._tickers_cache: tuple[float, str, dict] | None = None
         self.primary = self._build_exchange(cfg.exchange)
         self.backup = (self._build_exchange(cfg.fallback_exchange)
@@ -293,7 +293,7 @@ class MarketData:
         Cached for a fraction of the bar duration so a 60s scan loop doesn't
         re-download 4h candles that cannot possibly have changed.
         """
-        key = (self.source, symbol, timeframe)
+        key = (self.source, symbol, timeframe, limit)
         if ttl is None:
             ttl = max(15, min(tf_seconds(timeframe) // 3, 900))
         now = time.time()
