@@ -1493,8 +1493,20 @@ function renderPaper(){
             <td>${(p.avg_r||0).toFixed(2)} / ${p.best_r} / ${p.worst_r}</td></tr>
         <tr><td title="Money won divided by money lost">Profit factor</td><td>${p.profit_factor===null?"–":p.profit_factor}</td></tr>
         <tr><td title="Largest drop from a peak">Max drawdown</td><td>${p.max_drawdown_pct}%</td></tr>
-      </table></details>`;
+      </table></details>
+    ${LIVE?`<button id="paperReset" style="margin-top:12px;font-size:12.5px">Start over with
+      ${fmtUsd((state.settings&&state.settings.account_equity)||p.starting_equity)}</button>`:""}`;
   wireEquityHover(p.equity_curve_points||[]);
+  const rb=document.getElementById("paperReset");
+  if(rb) rb.onclick=async()=>{
+    if(!confirm("Close every practice trade and start a fresh practice account? Its history is cleared.")) return;
+    rb.disabled=true; rb.textContent="Resetting…";
+    try{
+      const r=await fetch("/api/paper/reset",{method:"POST"}); const d=await r.json();
+      if(!r.ok||!d.ok){ alert(d.error||"Could not reset"); return; }
+      fetchState(false);
+    }finally{ rb.disabled=false; }
+  };
 }
 
 function renderLive(){

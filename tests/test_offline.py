@@ -1126,6 +1126,7 @@ def test_settings_and_goal():
               and sc.users.get("owner@example.com").risk.max_open_positions == 2)
         html = c.get("/app").data
         check("dashboard has the bot settings panel", b'id="botPanel"' in html)
+        check("practice panel has a start-over button", b'id="paperReset"' in html)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
